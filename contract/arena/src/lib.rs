@@ -45,6 +45,9 @@ pub enum ArenaError {
     RoundDeadlineOverflow = 8,
     NotInitialized = 9,
     Paused = 10,
+    ArenaFull = 11,
+    AlreadyJoined = 12,
+    InvalidAmount = 13,
 }
 
 #[contracttype]
@@ -77,6 +80,7 @@ enum DataKey {
     Config,
     Round,
     Submission(u32, Address),
+    Survivor(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -193,10 +197,25 @@ impl ArenaContract {
 
     /// Return whether the contract is paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&PAUSED_KEY)
-            .unwrap_or(false)
+        env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+    }
+
+    pub fn join(env: Env, player: Address, amount: i128) -> Result<(), ArenaError> {
+        player.require_auth();
+
+        if amount <= 0 {
+            return Err(ArenaError::InvalidAmount);
+        }
+
+        let survivor_key = DataKey::Survivor(player.clone());
+        if storage(&env).has(&survivor_key) {
+            return Err(ArenaError::AlreadyJoined);
+        }
+
+        storage(&env).set(&survivor_key, &());
+        bump(&env, &survivor_key);
+
+        Ok(())
     }
 
     // ── Round state machine ──────────────────────────────────────────────────
@@ -407,10 +426,8 @@ impl ArenaContract {
             .instance()
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
-        env.events().publish(
-            (TOPIC_UPGRADE_PROPOSED,),
-            (new_wasm_hash, execute_after),
-        );
+        env.events()
+            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
@@ -431,7 +448,6 @@ impl ArenaContract {
     pub fn execute_upgrade(env: Env) {
         require_not_paused(&env).unwrap();
         let admin: Address = env
-        
             .storage()
             .instance()
             .get(&ADMIN_KEY)
@@ -461,8 +477,7 @@ impl ArenaContract {
         env.events()
             .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
 
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Cancel a pending upgrade proposal. Admin-only.
