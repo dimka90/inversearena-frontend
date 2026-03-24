@@ -1413,3 +1413,17 @@ fn test_is_paused_reflects_state_transitions() {
     client.unpause();
     assert!(!client.is_paused());
 }
+
+#[test]
+#[should_panic(expected = "malformed upgrade state")]
+fn test_execute_upgrade_malformed_state() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+    
+    // Manually set only the hash, missing EXECUTE_AFTER_KEY
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&symbol_short!("P_HASH"), &hash);
+    });
+    
+    client.execute_upgrade();
+}
