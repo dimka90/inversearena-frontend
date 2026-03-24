@@ -14,6 +14,12 @@ const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
 
+// ── TTL constants (ledgers; mainnet ≈ 5 s/ledger) ────────────────────────────
+// Bump entries when remaining TTL falls below ~5.8 days; extend to ~31 days.
+// This ensures game state survives the maximum possible round duration.
+const GAME_TTL_THRESHOLD: u32 = 100_000; // ~5.8 days
+const GAME_TTL_EXTEND_TO: u32 = 535_680; // ~31 days
+
 // ── Event topics ──────────────────────────────────────────────────────────────
 
 const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
@@ -87,12 +93,17 @@ impl ArenaContract {
             return Err(ArenaError::InvalidRoundSpeed);
         }
 
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+
         storage(&env).set(
             &DataKey::Config,
             &ArenaConfig {
                 round_speed_in_ledgers,
             },
         );
+        bump(&env, &DataKey::Config);
 
         storage(&env).set(
             &DataKey::Round,
@@ -105,6 +116,7 @@ impl ArenaContract {
                 timed_out: false,
             },
         );
+        bump(&env, &DataKey::Round);
 
         Ok(())
     }
@@ -131,6 +143,10 @@ impl ArenaContract {
     // ── Round state machine ──────────────────────────────────────────────────
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+
         let config = get_config(&env)?;
         let previous_round = get_round(&env)?;
 
@@ -153,11 +169,15 @@ impl ArenaContract {
         };
 
         storage(&env).set(&DataKey::Round, &next_round);
+        bump(&env, &DataKey::Round);
 
         Ok(next_round)
     }
 
     pub fn submit_choice(env: Env, player: Address, choice: Choice) -> Result<(), ArenaError> {
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         player.require_auth();
 
         let mut round = get_round(&env)?;
@@ -176,14 +196,20 @@ impl ArenaContract {
         }
 
         storage(&env).set(&submission_key, &choice);
+        bump(&env, &submission_key);
 
         round.total_submissions += 1;
         storage(&env).set(&DataKey::Round, &round);
+        bump(&env, &DataKey::Round);
 
         Ok(())
     }
 
     pub fn timeout_round(env: Env) -> Result<RoundState, ArenaError> {
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+
         let mut round = get_round(&env)?;
         if !round.active {
             return Err(ArenaError::NoActiveRound);
@@ -197,6 +223,7 @@ impl ArenaContract {
         round.active = false;
         round.timed_out = true;
         storage(&env).set(&DataKey::Round, &round);
+        bump(&env, &DataKey::Round);
 
         Ok(round)
     }
@@ -327,6 +354,12 @@ fn get_round(env: &Env) -> Result<RoundState, ArenaError> {
 
 fn storage(env: &Env) -> soroban_sdk::storage::Persistent {
     env.storage().persistent()
+}
+
+fn bump(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
 }
 
 #[cfg(test)]
