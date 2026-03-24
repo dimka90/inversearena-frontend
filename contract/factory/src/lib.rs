@@ -304,11 +304,18 @@ impl FactoryContract {
             .expect("not initialized");
         admin.require_auth();
 
+        if !env.storage().instance().has(&PENDING_HASH_KEY) {
+            panic!("no pending upgrade");
+        }
+        if !env.storage().instance().has(&EXECUTE_AFTER_KEY) {
+            panic!("malformed upgrade state");
+        }
+
         let execute_after: u64 = env
             .storage()
             .instance()
             .get(&EXECUTE_AFTER_KEY)
-            .expect("no pending upgrade");
+            .expect("malformed upgrade state");
 
         if env.ledger().timestamp() < execute_after {
             panic!("timelock has not expired");
@@ -318,7 +325,7 @@ impl FactoryContract {
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
-            .expect("no pending upgrade");
+            .expect("malformed upgrade state");
 
         // Clear pending state before upgrading.
         env.storage().instance().remove(&PENDING_HASH_KEY);
