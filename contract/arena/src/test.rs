@@ -181,6 +181,43 @@ fn data_model_doc_covers_required_sections() {
     assert!(doc.contains("No custom Soroban storage keys are currently defined or used."));
 }
 
+// ── TTL survival test ─────────────────────────────────────────────────────────
+
+#[test]
+fn state_survives_expected_game_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+    let player = Address::generate(&env);
+
+    // Initialise and start a round at ledger 1_000.  Use a large round window
+    // (20_000 ledgers) so the round remains open when we advance the ledger.
+    set_ledger_sequence(&env, 1_000);
+    client.init(&20_000);
+    client.start_round();
+
+    // Submit a choice while still within the round window.
+    set_ledger_sequence(&env, 1_001);
+    client.submit_choice(&player, &Choice::Heads);
+
+    // Advance 10_000 ledgers beyond init — well past the default
+    // min_persistent_entry_ttl (4_096) but far below GAME_TTL_EXTEND_TO
+    // (535_680).  Without explicit TTL extension the Config, Round, and
+    // Submission entries would have expired here.
+    set_ledger_sequence(&env, 11_000);
+
+    // All state must still be readable.
+    let config = client.get_config();
+    assert_eq!(config.round_speed_in_ledgers, 20_000);
+
+    let round = client.get_round();
+    assert!(round.active);
+    assert_eq!(round.round_number, 1);
+    assert_eq!(round.total_submissions, 1);
+
+    assert_eq!(client.get_choice(&1, &player), Some(Choice::Heads));
+}
+
 // ── Upgrade mechanism tests ───────────────────────────────────────────────────
 
 #[test]
