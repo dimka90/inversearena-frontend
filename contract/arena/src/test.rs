@@ -173,7 +173,12 @@ fn submit_choice_allows_submission_on_deadline_ledger() {
     client.start_round();
 
     set_ledger_sequence(&env, 205);
+<<<<<<< fix/issue-279-round-isolation
+    client.join(&player, &10_000_000);
+    client.submit_choice(&player, &1, &Choice::Heads);
+=======
     client.submit_choice(&player, &1u32, &Choice::Heads);
+>>>>>>> main
 
     assert_eq!(client.get_choice(&1, &player), Some(Choice::Heads));
     assert_eq!(client.get_round().total_submissions, 1);
@@ -189,10 +194,15 @@ fn submit_choice_rejects_late_submissions() {
 
     set_ledger_sequence(&env, 300);
     client.init(&5);
+    client.join(&player, &10_000_000);
     client.start_round();
 
     set_ledger_sequence(&env, 306);
+<<<<<<< fix/issue-279-round-isolation
+    let result = client.try_submit_choice(&player, &1, &Choice::Tails);
+=======
     let result = client.try_submit_choice(&player, &1u32, &Choice::Tails);
+>>>>>>> main
 
     assert_eq!(result, Err(Ok(ArenaError::SubmissionWindowClosed)));
 }
@@ -280,7 +290,12 @@ fn state_survives_expected_game_duration() {
 
     // Submit a choice while still within the round window.
     set_ledger_sequence(&env, 1_001);
+<<<<<<< fix/issue-279-round-isolation
+    client.join(&player, &10_000_000);
+    client.submit_choice(&player, &1, &Choice::Heads);
+=======
     client.submit_choice(&player, &1u32, &Choice::Heads);
+>>>>>>> main
 
     // Advance 10_000 ledgers beyond init — well past the default
     // min_persistent_entry_ttl (4_096) but far below GAME_TTL_EXTEND_TO
@@ -340,7 +355,7 @@ fn test_propose_upgrade_replaces_previous() {
 }
 
 #[test]
-#[should_panic(expected = "no pending upgrade")]
+#[should_panic(expected = "malformed upgrade state")]
 fn test_execute_without_proposal_panics() {
     let (_env, _admin, client) = setup_with_admin();
     client.execute_upgrade();
@@ -387,7 +402,7 @@ fn test_cancel_clears_pending_upgrade() {
 }
 
 #[test]
-#[should_panic(expected = "no pending upgrade")]
+#[should_panic(expected = "malformed upgrade state")]
 fn test_execute_after_cancel_panics() {
     let (env, _admin, client) = setup_with_admin();
     client.propose_upgrade(&dummy_hash(&env));
@@ -471,7 +486,12 @@ proptest! {
         }
 
         for p in &players {
+<<<<<<< fix/issue-279-round-isolation
+            client.join(p, &10_000_000);
+            client.submit_choice(p, &1, &Choice::Heads);
+=======
             client.submit_choice(p, &1u32, &Choice::Heads);
+>>>>>>> main
         }
 
         let round = client.get_round();
@@ -498,9 +518,16 @@ proptest! {
         client.start_round();
 
         let player = Address::generate(&env);
+<<<<<<< fix/issue-279-round-isolation
+        client.join(&player, &10_000_000);
+        client.submit_choice(&player, &1, &Choice::Heads);
+
+        let result = client.try_submit_choice(&player, &1, &Choice::Tails);
+=======
         client.submit_choice(&player, &1u32, &Choice::Heads);
 
         let result = client.try_submit_choice(&player, &1u32, &Choice::Tails);
+>>>>>>> main
         prop_assert_eq!(
             result,
             Err(Ok(ArenaError::SubmissionAlreadyExists)),
@@ -530,7 +557,12 @@ proptest! {
         let absent   = Address::generate(&env);
         let expected = if submit_heads { Choice::Heads } else { Choice::Tails };
 
+<<<<<<< fix/issue-279-round-isolation
+        client.join(&player, &10_000_000);
+        client.submit_choice(&player, &1, &expected);
+=======
         client.submit_choice(&player, &1u32, &expected);
+>>>>>>> main
 
         prop_assert_eq!(client.get_choice(&1, &player), Some(expected));
         prop_assert_eq!(client.get_choice(&1, &absent), None);
@@ -556,7 +588,12 @@ proptest! {
 
         for _ in 0..player_count {
             let p = Address::generate(&env);
+<<<<<<< fix/issue-279-round-isolation
+            client.join(&p, &10_000_000);
+            client.submit_choice(&p, &1, &Choice::Heads);
+=======
             client.submit_choice(&p, &1u32, &Choice::Heads);
+>>>>>>> main
         }
 
         let round = client.get_round();
@@ -588,7 +625,12 @@ proptest! {
 
         for _ in 0..early_submitters {
             let p = Address::generate(&env);
+<<<<<<< fix/issue-279-round-isolation
+            client.join(&p, &10_000_000);
+            client.submit_choice(&p, &1, &Choice::Tails);
+=======
             client.submit_choice(&p, &1u32, &Choice::Tails);
+>>>>>>> main
         }
 
         advance_ledger_with_auth(&env, 1_000 + round_speed + 1);
@@ -602,7 +644,11 @@ proptest! {
 
         for _ in 0..3 {
             let late = Address::generate(&env);
+<<<<<<< fix/issue-279-round-isolation
+            let result = client.try_submit_choice(&late, &1, &Choice::Heads);
+=======
             let result = client.try_submit_choice(&late, &1u32, &Choice::Heads);
+>>>>>>> main
             prop_assert!(
                 result.is_err(),
                 "late submission after timeout must be rejected"
@@ -876,7 +922,12 @@ fn round_state_is_consistent_after_timeout() {
     // player submits within window
     set_ledger_sequence(&env, 302);
     env.mock_all_auths();
+<<<<<<< fix/issue-279-round-isolation
+    client.join(&player, &10_000_000);
+    client.submit_choice(&player, &1, &Choice::Heads);
+=======
     client.submit_choice(&player, &1u32, &Choice::Heads);
+>>>>>>> main
 
     // advance past deadline and call timeout
     set_ledger_sequence(&env, 306);
@@ -907,7 +958,12 @@ fn player_choice_accessible_after_timeout() {
 
     set_ledger_sequence(&env, 401);
     env.mock_all_auths();
+<<<<<<< fix/issue-279-round-isolation
+    client.join(&player, &10_000_000);
+    client.submit_choice(&player, &1, &Choice::Tails);
+=======
     client.submit_choice(&player, &1u32, &Choice::Tails);
+>>>>>>> main
 
     set_ledger_sequence(&env, 404);
     client.timeout_round();
@@ -977,8 +1033,15 @@ fn submit_choice_rejected_after_deadline() {
     client.init(&5); // deadline = 805
     client.start_round();
 
+    set_ledger_sequence(&env, 801);
+    client.join(&player, &10_000_000);
+
     set_ledger_sequence(&env, 806);
+<<<<<<< fix/issue-279-round-isolation
+    let result = client.try_submit_choice(&player, &1, &Choice::Heads);
+=======
     let result = client.try_submit_choice(&player, &1u32, &Choice::Heads);
+>>>>>>> main
 
     assert_eq!(result, Err(Ok(ArenaError::SubmissionWindowClosed)));
 }
@@ -1080,8 +1143,15 @@ fn partial_submissions_preserved_after_timeout() {
     // only player_a and player_b submit
     set_ledger_sequence(&env, 2005);
     env.mock_all_auths();
+<<<<<<< fix/issue-279-round-isolation
+    client.join(&player_a, &10_000_000);
+    client.join(&player_b, &10_000_000);
+    client.submit_choice(&player_a, &1, &Choice::Heads);
+    client.submit_choice(&player_b, &1, &Choice::Tails);
+=======
     client.submit_choice(&player_a, &1u32, &Choice::Heads);
     client.submit_choice(&player_b, &1u32, &Choice::Tails);
+>>>>>>> main
 
     set_ledger_sequence(&env, 2011);
     let timed_out = client.timeout_round();
@@ -1218,7 +1288,11 @@ fn test_functions_fail_when_paused() {
 
     // All state-changing functions should fail
     assert_eq!(client.try_start_round(), Err(Ok(ArenaError::Paused)));
+<<<<<<< fix/issue-279-round-isolation
+    assert_eq!(client.try_submit_choice(&player, &1, &Choice::Heads), Err(Ok(ArenaError::Paused)));
+=======
     assert_eq!(client.try_submit_choice(&player, &1u32, &Choice::Heads), Err(Ok(ArenaError::Paused)));
+>>>>>>> main
     assert_eq!(client.try_timeout_round(), Err(Ok(ArenaError::Paused)));
     
     let hash = dummy_hash(&env);
@@ -1242,6 +1316,56 @@ fn test_unpause_restores_functionality() {
     assert_eq!(round.round_number, 1);
 }
 
+<<<<<<< fix/issue-279-round-isolation
+// ── New Verification Tests (Issue #279) ─────────────────────────────
+
+#[test]
+fn test_submit_choice_fails_for_non_survivor() {
+    let env = make_env();
+    let client = create_client(&env);
+    let player = Address::generate(&env);
+
+    set_ledger(&env, 100);
+    client.init(&5);
+    client.start_round();
+
+    // Player attempts to submit without joining first
+    let result = client.try_submit_choice(&player, &1, &Choice::Heads);
+    assert_eq!(result, Err(Ok(ArenaError::PlayerNotSurvivor)));
+}
+
+#[test]
+fn test_submit_choice_fails_for_round_mismatch() {
+    let env = make_env();
+    let client = create_client(&env);
+    let player = Address::generate(&env);
+
+    set_ledger(&env, 100);
+    client.init(&5);
+    client.start_round();
+    client.join(&player, &10_000_000);
+
+    // Round number mismatch (current is 1, player sends 2)
+    let result = client.try_submit_choice(&player, &2, &Choice::Heads);
+    assert_eq!(result, Err(Ok(ArenaError::RoundMismatch)));
+}
+
+#[test]
+fn test_submit_choice_succeeds_for_survivor() {
+    let env = make_env();
+    let client = create_client(&env);
+    let player = Address::generate(&env);
+
+    set_ledger(&env, 100);
+    client.init(&5);
+    client.start_round();
+    client.join(&player, &10_000_000);
+
+    // Should succeed for joined player
+    let result = client.try_submit_choice(&player, &1, &Choice::Heads);
+    assert!(result.is_ok());
+    assert_eq!(client.get_choice(&1, &player), Some(Choice::Heads));
+=======
 // ── Issue #271: Emergency Pause Policy — governance/upgrade exemption ──────────
 //
 // Policy: propose_upgrade, execute_upgrade, and cancel_upgrade must be callable
@@ -1412,4 +1536,5 @@ fn test_is_paused_reflects_state_transitions() {
 
     client.unpause();
     assert!(!client.is_paused());
+>>>>>>> main
 }

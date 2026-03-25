@@ -51,6 +51,8 @@ pub enum ArenaError {
     NoPrizeToClaim = 14,
     AlreadyClaimed = 15,
     ReentrancyGuard = 16,
+    RoundMismatch = 17,
+    PlayerNotSurvivor = 18,
 }
 
 #[contracttype]
@@ -387,7 +389,12 @@ impl ArenaContract {
         }
 
         if round_number != round.round_number {
-            return Err(ArenaError::RoundDeadlineOverflow);
+            return Err(ArenaError::RoundMismatch);
+        }
+
+        let survivor_key = DataKey::Survivor(player.clone());
+        if !storage(&env).has(&survivor_key) {
+            return Err(ArenaError::PlayerNotSurvivor);
         }
 
         let current_ledger = env.ledger().sequence();
