@@ -104,7 +104,11 @@ fn lifecycle_full_game_three_rounds_eight_players() {
     for (i, p) in players.iter().enumerate() {
         arena.join(p, &10_000_000i128);
         let choice = if i % 2 == 0 { Choice::Heads } else { Choice::Tails };
+<<<<<<< fix/issue-279-round-isolation
         arena.submit_choice(p, &1u32, &choice);
+=======
+        arena.submit_choice(p, &r1.round_number, &choice);
+>>>>>>> main
     }
 
     // Verify all 8 submissions recorded.
@@ -139,7 +143,11 @@ fn lifecycle_full_game_three_rounds_eight_players() {
     set_seq(&env, 1_035);
     for (i, p) in survivors_r2.iter().enumerate() {
         let choice = if i % 2 == 0 { Choice::Heads } else { Choice::Tails };
+<<<<<<< fix/issue-279-round-isolation
         arena.submit_choice(p, &2u32, &choice);
+=======
+        arena.submit_choice(p, &r2.round_number, &choice);
+>>>>>>> main
     }
 
     let state2 = arena.get_round();
@@ -167,7 +175,11 @@ fn lifecycle_full_game_three_rounds_eight_players() {
 
     set_seq(&env, 1_055);
     for p in &survivors_r3 {
+<<<<<<< fix/issue-279-round-isolation
         arena.submit_choice(p, &3u32, &Choice::Heads);
+=======
+        arena.submit_choice(p, &r3.round_number, &Choice::Heads);
+>>>>>>> main
     }
 
     let state3 = arena.get_round();
@@ -216,11 +228,15 @@ fn lifecycle_player_counts_decrease_each_round() {
 
     // Round 1: 8 players.
     set_seq(&env, 510);
-    arena.start_round();
+    let r1 = arena.start_round();
     set_seq(&env, 512);
     for p in &all_players {
+<<<<<<< fix/issue-279-round-isolation
         arena.join(p, &10_000_000i128);
         arena.submit_choice(p, &1u32, &Choice::Heads);
+=======
+        arena.submit_choice(p, &r1.round_number, &Choice::Heads);
+>>>>>>> main
     }
     set_seq(&env, 516);
     let r1 = arena.timeout_round();
@@ -228,10 +244,14 @@ fn lifecycle_player_counts_decrease_each_round() {
 
     // Round 2: 4 players (half eliminated).
     set_seq(&env, 520);
-    arena.start_round();
+    let r2 = arena.start_round();
     set_seq(&env, 522);
     for p in all_players.iter().take(4) {
+<<<<<<< fix/issue-279-round-isolation
         arena.submit_choice(p, &2u32, &Choice::Heads);
+=======
+        arena.submit_choice(p, &r2.round_number, &Choice::Heads);
+>>>>>>> main
     }
     set_seq(&env, 526);
     let r2 = arena.timeout_round();
@@ -239,10 +259,14 @@ fn lifecycle_player_counts_decrease_each_round() {
 
     // Round 3: 2 players.
     set_seq(&env, 530);
-    arena.start_round();
+    let r3 = arena.start_round();
     set_seq(&env, 532);
     for p in all_players.iter().take(2) {
+<<<<<<< fix/issue-279-round-isolation
         arena.submit_choice(p, &3u32, &Choice::Heads);
+=======
+        arena.submit_choice(p, &r3.round_number, &Choice::Heads);
+>>>>>>> main
     }
     set_seq(&env, 536);
     let r3 = arena.timeout_round();
@@ -295,18 +319,26 @@ fn lifecycle_winner_payout_equals_total_stakes() {
     let num_players: i128 = 8;
     let total_prize = stake_per_player * num_players;
 
+<<<<<<< fix/issue-279-round-isolation
     factory.create_pool(&admin, &creator, &1u32, &(num_players as u32), &stake_per_player);
+=======
+    factory.create_pool(&admin, &creator, &1u32, &8u32, &stake_per_player);
+>>>>>>> main
     arena.init(&10u32);
 
     let players: std::vec::Vec<Address> = (0..num_players).map(|_| Address::generate(&env)).collect();
 
     // Run a single round, all players submit.
     set_seq(&env, 210);
-    arena.start_round();
+    let r1 = arena.start_round();
     set_seq(&env, 215);
     for p in &players {
+<<<<<<< fix/issue-279-round-isolation
         arena.join(p, &stake_per_player);
         arena.submit_choice(p, &1u32, &Choice::Heads);
+=======
+        arena.submit_choice(p, &r1.round_number, &Choice::Heads);
+>>>>>>> main
     }
     set_seq(&env, 221);
     arena.timeout_round();
