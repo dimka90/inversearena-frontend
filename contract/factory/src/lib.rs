@@ -256,11 +256,11 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    /// * [`Error::InvalidStakeAmount`] — `min_stake` is negative.
+    /// * [`Error::InvalidStakeAmount`] — `min_stake` is zero or negative.
     pub fn set_min_stake(env: Env, min_stake: i128) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
-        if min_stake < 0 {
+        if min_stake <= 0 {
             return Err(Error::InvalidStakeAmount);
         }
         env.storage().instance().set(&MIN_STAKE_KEY, &min_stake);

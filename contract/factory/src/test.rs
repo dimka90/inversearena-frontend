@@ -124,6 +124,13 @@ fn test_set_negative_min_stake_returns_invalid_stake_amount() {
     assert_eq!(result, Err(Ok(Error::InvalidStakeAmount)));
 }
 
+#[test]
+fn test_set_zero_min_stake_returns_invalid_stake_amount() {
+    let (_env, _admin, client) = setup();
+    let result = client.try_set_min_stake(&0);
+    assert_eq!(result, Err(Ok(Error::InvalidStakeAmount)));
+}
+
 // ── create_pool authorization ──────────────────────────────────────────────────
 
 #[test]
