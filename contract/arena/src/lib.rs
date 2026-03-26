@@ -395,15 +395,19 @@ impl ArenaContract {
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         player.require_auth();
+
+        // Verify the player is a registered survivor (i.e. joined the game).
+        let survivor_key = DataKey::Survivor(player.clone());
+        if !storage(&env).has(&survivor_key) {
+            return Err(ArenaError::NotASurvivor);
+        }
+
         let mut round = get_round(&env)?;
         if !round.active {
             return Err(ArenaError::NoActiveRound);
         }
         if round_number != round.round_number {
             return Err(ArenaError::WrongRoundNumber);
-        }
-        if !storage(&env).has(&DataKey::Survivor(player.clone())) {
-            return Err(ArenaError::PlayerEliminated);
         }
         if env.ledger().sequence() > round.round_deadline_ledger {
             return Err(ArenaError::SubmissionWindowClosed);

@@ -1945,3 +1945,26 @@ fn get_user_state_returns_consistent_for_multiple_players() {
     assert_eq!(state_outsider.is_active, false);
     assert_eq!(state_outsider.has_won, false);
 }
+
+// ── Issue #312: non-survivor cannot submit_choice ─────────────────────────────
+
+#[test]
+fn submit_choice_rejects_non_survivor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = create_client(&env);
+    let non_survivor = Address::generate(&env);
+
+    set_ledger_sequence(&env, 100);
+    client.init(&5);
+    client.start_round();
+
+    // non_survivor never called join(), so they have no Survivor key.
+    let result = client.try_submit_choice(&non_survivor, &1u32, &Choice::Heads);
+    assert_eq!(result, Err(Ok(ArenaError::NotASurvivor)));
+
+    // Confirm no submission was recorded.
+    assert_eq!(client.get_choice(&1, &non_survivor), None);
+    assert_eq!(client.get_round().total_submissions, 0);
+}
