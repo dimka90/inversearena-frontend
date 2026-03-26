@@ -1544,3 +1544,80 @@ fn round_state_machine_invariant_suite_happy_path() {
     invariants::check_timeout_transition(&r1, &r1t).unwrap();
 }
 
+// ── Issue #319: claim prize-pool drain and round.finished ─────────────────────
+
+#[test]
+fn claim_single_winner_gets_correct_prize() {
+    let (env, admin, client) = setup_with_admin();
+    let (asset, token_id) = setup_token(&env, &admin);
+    // Fund the contract with enough tokens for the prize.
+    asset.mint(&client.address, &1_500i128);
+    client.set_token(&token_id);
+
+    let winner = Address::generate(&env);
+    client.set_winner(&winner, &1_000i128, &500i128);
+
+    let claimed = client.claim(&winner);
+    assert_eq!(claimed, 1_500i128);
+}
+
+#[test]
+fn claim_second_winner_still_gets_prize() {
+    let (env, admin, client) = setup_with_admin();
+    let (asset, token_id) = setup_token(&env, &admin);
+    // Fund the contract with enough tokens for both prizes.
+    asset.mint(&client.address, &3_000i128);
+    client.set_token(&token_id);
+
+    let winner_a = Address::generate(&env);
+    let winner_b = Address::generate(&env);
+    client.set_winner(&winner_a, &1_000i128, &500i128);
+    client.set_winner(&winner_b, &800i128, &200i128);
+
+    // First winner claims their share.
+    let claimed_a = client.claim(&winner_a);
+    assert_eq!(claimed_a, 1_500i128);
+
+    // Second winner must still be able to claim their own share.
+    let claimed_b = client.claim(&winner_b);
+    assert_eq!(claimed_b, 1_000i128);
+}
+
+#[test]
+fn claim_last_winner_sets_round_finished() {
+    let (env, admin, client) = setup_with_admin();
+    let (asset, token_id) = setup_token(&env, &admin);
+    asset.mint(&client.address, &1_000i128);
+    client.set_token(&token_id);
+
+    let winner = Address::generate(&env);
+    client.set_winner(&winner, &600i128, &400i128);
+
+    // Before claim, start a round so RoundState exists.
+    client.init(&5);
+    set_ledger_sequence(&env, 1);
+    client.start_round();
+
+    client.claim(&winner);
+
+    // After the last (only) winner claims, round.finished must be true.
+    let round = client.get_round();
+    assert!(round.finished);
+}
+
+#[test]
+fn claim_already_claimed_returns_error() {
+    let (env, admin, client) = setup_with_admin();
+    let (asset, token_id) = setup_token(&env, &admin);
+    asset.mint(&client.address, &1_000i128);
+    client.set_token(&token_id);
+
+    let winner = Address::generate(&env);
+    client.set_winner(&winner, &600i128, &400i128);
+    client.claim(&winner);
+
+    // Second claim must be rejected.
+    let err = client.try_claim(&winner);
+    assert_eq!(err, Err(Ok(ArenaError::AlreadyClaimed)));
+}
+

@@ -1,11 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
-    Address, BytesN, Env, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
-    symbol_short, token,
-
+    contract, contracterror, contractimpl, contracttype, symbol_short, token,
+    Address, BytesN, Env, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -20,9 +17,9 @@ const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
+const UNCLAIMED_WINNERS_KEY: Symbol = symbol_short!("UC_WIN");
 
 const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
-const GAME_STATUS_KEY: Symbol = symbol_short!("G_STAT");
 
 /// Current schema version. Bump this when storage layout changes.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -46,6 +43,9 @@ const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_WINNER_SET: Symbol = symbol_short!("WIN_SET");
+const TOPIC_CLAIM: Symbol = symbol_short!("CLAIM");
+const EVENT_VERSION: u32 = 1;
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -144,16 +144,6 @@ pub struct ArenaState {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArenaState {
-    pub survivors_count: u32,
-    pub max_capacity: u32,
-    pub round_number: u32,
-    pub current_stake: i128,
-    pub potential_payout: i128,
-}
-
-#[contracttype]
 #[derive(Clone)]
 enum DataKey {
     Config,
@@ -161,7 +151,6 @@ enum DataKey {
     Submission(u32, Address),
     Survivor(Address),
     PrizeClaimed(Address),
-    Survivor(Address),
     Winner(Address),
     Token,
 }
@@ -239,19 +228,6 @@ impl ArenaContract {
         env.storage().instance().set(&TOKEN_KEY, &token);
     }
 
-    pub fn set_winner(env: Env, player: Address, stake: i128, yield_comp: i128) {
-        require_not_paused(&env).unwrap();
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&ADMIN_KEY)
-            .expect("not initialized");
-        admin.require_auth();
-        storage(&env).set(&DataKey::Winner(player.clone()), &(stake, yield_comp));
-        bump(&env, &DataKey::Winner(player.clone()));
-        env.events()
-            .publish((TOPIC_WINNER_SET,), (player, stake, yield_comp));
-    }
     // ── Admin ────────────────────────────────────────────────────────────────
 
     /// Set the admin address. Must be called once after deployment before any
@@ -617,6 +593,15 @@ impl ArenaContract {
         })
     }
 
+    /// Record a winner and their claimable prize. Admin-only.
+    ///
+    /// Stores the winner's individual prize in `DataKey::Winner`, adds it to the
+    /// shared prize pool, and increments the unclaimed-winners counter so that
+    /// `round.finished` is only set when every winner has claimed.
+    ///
+    /// # Errors
+    /// * [`ArenaError::InvalidAmount`] — `stake` or `yield_comp` is negative, or their
+    ///   sum overflows.
     pub fn set_winner(env: Env, player: Address, stake: i128, yield_comp: i128) -> Result<(), ArenaError> {
         require_not_paused(&env)?;
         let admin = Self::admin(env.clone());
@@ -630,8 +615,20 @@ impl ArenaContract {
             .checked_add(yield_comp)
             .ok_or(ArenaError::InvalidAmount)?;
 
-        storage(&env).set(&DataKey::Survivor(player), &());
-        env.storage().instance().set(&PRIZE_POOL_KEY, &prize);
+        // Store this winner's individual claimable amount.
+        storage(&env).set(&DataKey::Winner(player.clone()), &prize);
+        bump(&env, &DataKey::Winner(player.clone()));
+
+        // Accumulate into the shared prize pool.
+        let pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+        let new_pool = pool.checked_add(prize).ok_or(ArenaError::InvalidAmount)?;
+        env.storage().instance().set(&PRIZE_POOL_KEY, &new_pool);
+
+        // Track how many winners still need to claim.
+        let unclaimed: u32 = env.storage().instance().get(&UNCLAIMED_WINNERS_KEY).unwrap_or(0);
+        env.storage().instance().set(&UNCLAIMED_WINNERS_KEY, &(unclaimed + 1));
+
+        env.events().publish((TOPIC_WINNER_SET,), (player, stake, yield_comp, EVENT_VERSION));
         Ok(())
     }
 
@@ -649,16 +646,19 @@ impl ArenaContract {
             return Err(ArenaError::ReentrancyGuard);
         }
 
-        // ── CHECK: prize pool must be non-zero ────────────────────────────────────
-        let prize: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
-        if prize <= 0 {
-            return Err(ArenaError::NoPrizeToClaim);
-        }
-
         // ── CHECK: winner must not have claimed before ────────────────────────────
         let prize_key = DataKey::PrizeClaimed(winner.clone());
         if storage(&env).has(&prize_key) {
             return Err(ArenaError::AlreadyClaimed);
+        }
+
+        // ── CHECK: winner must have a registered prize ────────────────────────────
+        let winner_key = DataKey::Winner(winner.clone());
+        let prize: i128 = storage(&env)
+            .get(&winner_key)
+            .ok_or(ArenaError::NoPrizeToClaim)?;
+        if prize <= 0 {
+            return Err(ArenaError::NoPrizeToClaim);
         }
 
         // ── CHECK: token must be configured ───────────────────────────────────────
@@ -671,11 +671,30 @@ impl ArenaContract {
         // ── EFFECT: lock re-entrancy guard ────────────────────────────────────────
         env.storage().instance().set(&GAME_STATUS_KEY, &true);
 
-        // ── EFFECT: record claim and drain prize pool BEFORE external call (CEI) ──
+        // ── EFFECT: record claim BEFORE external call (CEI) ──────────────────────
         storage(&env).set(&prize_key, &prize);
         bump(&env, &prize_key);
 
-        env.storage().instance().set(&PRIZE_POOL_KEY, &0i128);
+        // ── EFFECT: subtract only this winner's share from the pool ───────────────
+        let pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&PRIZE_POOL_KEY, &pool.saturating_sub(prize));
+
+        // ── EFFECT: decrement unclaimed count; set round.finished on last claim ───
+        let unclaimed: u32 = env.storage().instance().get(&UNCLAIMED_WINNERS_KEY).unwrap_or(1);
+        if unclaimed <= 1 {
+            env.storage().instance().set(&UNCLAIMED_WINNERS_KEY, &0u32);
+            if let Ok(mut round) = get_round(&env) {
+                round.finished = true;
+                storage(&env).set(&DataKey::Round, &round);
+                bump(&env, &DataKey::Round);
+            }
+        } else {
+            env.storage()
+                .instance()
+                .set(&UNCLAIMED_WINNERS_KEY, &(unclaimed - 1));
+        }
 
         // ── INTERACTION: transfer prize tokens to winner ──────────────────────────
         token::Client::new(&env, &token).transfer(
