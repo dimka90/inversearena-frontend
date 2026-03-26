@@ -78,7 +78,7 @@ pub enum ArenaError {
     NotASurvivor = 17,
     GameAlreadyFinished = 18,
     TokenNotSet = 19,
-    /// Per-round submission storage would exceed [`bounds::MAX_SUBMISSIONS_PER_ROUND`](crate::bounds::MAX_SUBMISSIONS_PER_ROUND).
+    /// Per-round submission storage would exceed `MAX_SUBMISSIONS_PER_ROUND`.
     MaxSubmissionsPerRound = 20,
     PlayerEliminated = 21,
 }
@@ -863,7 +863,7 @@ fn bump(env: &Env, key: &DataKey) {
         .extend_ttl(key, GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
 }
 
-#[cfg(all(test, feature = "integration-tests"))]
+#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod test;
