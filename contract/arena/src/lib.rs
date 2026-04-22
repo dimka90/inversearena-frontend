@@ -4,7 +4,7 @@ mod bounds;
 mod invariants;
 
 use soroban_sdk::{
-    Address, BytesN, Env, Map, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
     symbol_short, token,
 };
 
@@ -89,6 +89,9 @@ pub enum ArenaError {
     WinnerNotSet = 31,
     AlreadyCancelled = 32,
     InvalidMaxRounds = 33,
+    NameTooLong = 34,
+    NameEmpty = 35,
+    DescriptionTooLong = 36,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -177,6 +180,22 @@ pub struct FullStateView {
     pub has_won: bool,
 }
 
+/// Human-readable metadata attached to an arena instance.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ArenaMetadata {
+    /// Application-level arena identifier (assigned by the factory or the host).
+    pub arena_id: u64,
+    /// Display name — max 64 bytes UTF-8.
+    pub name: String,
+    /// Optional description — max 256 bytes UTF-8.
+    pub description: Option<String>,
+    /// Address that created / hosts the arena.
+    pub host: Address,
+    /// Ledger timestamp at the moment metadata was stored.
+    pub created_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
@@ -192,6 +211,7 @@ enum DataKey {
     AllPlayers,
     Refunded(Address),
     State,
+    Metadata(u64),
 }
 
 
@@ -784,6 +804,18 @@ impl ArenaContract {
             (TOPIC_CHOICE_SUBMITTED,),
             (player, round.round_number, EVENT_VERSION),
         );
+        // Auto-advance: when every active survivor has submitted, resolve immediately.
+        let survivor_count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+        if survivor_count > 0 && round.total_submissions == survivor_count {
+            round.active = false;
+            storage(&env).set(&DataKey::Round, &round);
+            bump(&env, &DataKey::Round);
+            resolve_round_internal(&env)?;
+        }
 
         Ok(())
     }
@@ -842,61 +874,6 @@ impl ArenaContract {
             return Err(ArenaError::GameAlreadyFinished);
         }
         let mut round = get_round(&env)?;
-        let config = get_config(&env)?;
-
-        // ── Max-rounds forced-draw check ─────────────────────────────────────
-        // When the current round number reaches the configured maximum, all
-        // surviving players split the prize pool equally instead of being
-        // eliminated one by one.
-        if round.round_number > 0 && round.round_number >= config.max_rounds {
-            let survivors = collect_survivors(&env);
-            let survivor_count = survivors.len() as i128;
-            let prize_pool: i128 = env
-                .storage()
-                .instance()
-                .get(&PRIZE_POOL_KEY)
-                .unwrap_or(0i128);
-
-            if survivor_count > 0 && prize_pool > 0 {
-                let token: Address = env
-                    .storage()
-                    .instance()
-                    .get(&TOKEN_KEY)
-                    .ok_or(ArenaError::TokenNotSet)?;
-                let share = prize_pool / survivor_count;
-                let dust = prize_pool % survivor_count;
-                let token_client = token::Client::new(&env, &token);
-
-                for survivor in survivors.iter() {
-                    token_client.transfer(
-                        &env.current_contract_address(),
-                        &survivor,
-                        &share,
-                    );
-                }
-                // Any indivisible dust goes to the first survivor.
-                if dust > 0 {
-                    let first = survivors.get(0).expect("survivor list non-empty");
-                    token_client.transfer(&env.current_contract_address(), &first, &dust);
-                }
-                env.storage().instance().set(&PRIZE_POOL_KEY, &0i128);
-            }
-
-            env.storage().instance().set(&GAME_FINISHED_KEY, &true);
-            round.finished = true;
-            storage(&env).set(&DataKey::Round, &round);
-            bump(&env, &DataKey::Round);
-
-            env.events().publish(
-                (TOPIC_MAX_ROUNDS,),
-                (round.round_number, survivors.len(), EVENT_VERSION),
-            );
-
-            return Ok(round);
-        }
-
-        #[cfg(debug_assertions)]
-        let before_round_number = state.round.round_number;
 
         if state.round.finished {
             return Err(ArenaError::NoActiveRound);
@@ -905,87 +882,13 @@ impl ArenaContract {
             if env.ledger().sequence() <= state.round.round_deadline_ledger {
                 return Err(ArenaError::RoundStillOpen);
             }
-            state.round.active = false;
-            state.round.timed_out = true;
+            round.active = false;
+            round.timed_out = true;
+            storage(&env).set(&DataKey::Round, &round);
+            bump(&env, &DataKey::Round);
         }
 
-        let choices = get_round_choices(&env, arena_id, state.round.round_number);
-        let mut heads_count = 0u32;
-        let mut tails_count = 0u32;
-        let mut heads_players = Vec::new(&env);
-        let mut tails_players = Vec::new(&env);
-
-        for (player, choice) in choices.iter() {
-            match choice {
-                Choice::Heads => {
-                    heads_count += 1;
-                    heads_players.push_back(player);
-                }
-                Choice::Tails => {
-                    tails_count += 1;
-                    tails_players.push_back(player);
-                }
-            }
-        }
-
-        let surviving_choice = choose_surviving_side(&env, heads_count, tails_count);
-        let eliminated_in_round = match surviving_choice {
-            Some(Choice::Heads) => tails_players,
-            Some(Choice::Tails) => heads_players,
-            None => Vec::new(&env),
-        };
-
-        let mut survivors = get_survivors(&env, arena_id);
-        let mut eliminated = get_eliminated(&env, arena_id);
-        let mut eliminated_count = 0u32;
-
-        for player in eliminated_in_round.iter() {
-            if let Some(idx) = survivors.first_index_of(&player) {
-                survivors.remove(idx);
-                eliminated.push_back(player);
-                eliminated_count += 1;
-            }
-        }
-
-        set_survivors(&env, arena_id, &survivors);
-        set_eliminated(&env, arena_id, &eliminated);
-
-        if survivors.len() <= 1 {
-            state.game_finished = true;
-            state.round.finished = true;
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            crate::invariants::check_round_flags(&state.round)
-                .expect("resolve_round: round flags invariant violated");
-            crate::invariants::check_round_number_monotonic(
-                before_round_number,
-                state.round.round_number,
-            )
-            .expect("resolve_round: round number monotonic invariant violated");
-        }
-
-        set_state(&env, arena_id, &state);
-
-        if round.finished {
-            set_state(&env, ArenaState::Completed);
-        }
-
-        env.events().publish(
-            (TOPIC_ROUND_RESOLVED, arena_id),
-            (
-                state.round.round_number,
-                heads_count,
-                tails_count,
-                outcome_symbol(&surviving_choice),
-                eliminated_count,
-                survivors.len(),
-                EVENT_VERSION,
-            ),
-        );
-
-        Ok(state.round)
+        resolve_round_internal(&env)
     }
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
@@ -1104,16 +1007,55 @@ impl ArenaContract {
         })
     }
 
-    pub fn get_players(env: Env, arena_id: u64) -> Vec<Address> {
-        get_players(&env, arena_id)
+    /// Store human-readable metadata for this arena instance.
+    ///
+    /// # Errors
+    /// * `NameEmpty`           — `name` has zero bytes.
+    /// * `NameTooLong`         — `name` exceeds 64 bytes.
+    /// * `DescriptionTooLong`  — `description` exceeds 256 bytes.
+    ///
+    /// # Authorization
+    /// Requires admin signature.
+    pub fn set_metadata(
+        env: Env,
+        arena_id: u64,
+        name: String,
+        description: Option<String>,
+        host: Address,
+    ) -> Result<(), ArenaError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+
+        if name.len() == 0 {
+            panic_with_error!(&env, ArenaError::NameEmpty);
+        }
+        if name.len() > 64 {
+            panic_with_error!(&env, ArenaError::NameTooLong);
+        }
+        if let Some(ref desc) = description {
+            if desc.len() > 256 {
+                panic_with_error!(&env, ArenaError::DescriptionTooLong);
+            }
+        }
+
+        let metadata = ArenaMetadata {
+            arena_id,
+            name,
+            description,
+            host,
+            created_at: env.ledger().timestamp(),
+        };
+
+        storage(&env).set(&DataKey::Metadata(arena_id), &metadata);
+        bump(&env, &DataKey::Metadata(arena_id));
+        Ok(())
     }
 
-    pub fn get_survivors(env: Env, arena_id: u64) -> Vec<Address> {
-        get_survivors(&env, arena_id)
-    }
-
-    pub fn get_eliminated(env: Env, arena_id: u64) -> Vec<Address> {
-        get_eliminated(&env, arena_id)
+    /// Return the stored metadata for the given `arena_id`, or `None` if not set.
+    ///
+    /// No authorization required — metadata is public.
+    pub fn get_metadata(env: Env, arena_id: u64) -> Option<ArenaMetadata> {
+        storage(&env).get(&DataKey::Metadata(arena_id))
     }
 
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ArenaError> {
@@ -1206,9 +1148,148 @@ impl ArenaContract {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn get_config(env: &Env, arena_id: u64) -> Result<ArenaConfig, ArenaError> {
+/// Core resolution logic shared by `resolve_round()` (deadline path) and the
+/// auto-advance path in `submit_choice()` (all-submitted path).
+///
+/// Expects the round to already have `active = false` in storage before being
+/// called.  Always sets `round.finished = true` on return so a second call is
+/// safely rejected by the `round.finished` guard in `resolve_round()`.
+fn resolve_round_internal(env: &Env) -> Result<RoundState, ArenaError> {
+    let mut round = get_round(env)?;
+    let config = get_config(env)?;
+
+    // Max-rounds forced-draw: surviving players split the prize pool equally.
+    if round.round_number > 0 && round.round_number >= config.max_rounds {
+        let survivors = collect_survivors(env);
+        let survivor_count = survivors.len() as i128;
+        let prize_pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+
+        if survivor_count > 0 && prize_pool > 0 {
+            let token: Address = env
+                .storage()
+                .instance()
+                .get(&TOKEN_KEY)
+                .ok_or(ArenaError::TokenNotSet)?;
+            let share = prize_pool / survivor_count;
+            let dust = prize_pool % survivor_count;
+            let token_client = token::Client::new(env, &token);
+
+            for survivor in survivors.iter() {
+                token_client.transfer(&env.current_contract_address(), &survivor, &share);
+            }
+            // Any indivisible dust goes to the first survivor.
+            if dust > 0 {
+                let first = survivors.get(0).expect("survivor list non-empty");
+                token_client.transfer(&env.current_contract_address(), &first, &dust);
+            }
+            env.storage().instance().set(&PRIZE_POOL_KEY, &0i128);
+        }
+
+        env.storage().instance().set(&GAME_FINISHED_KEY, &true);
+        round.finished = true;
+        storage(env).set(&DataKey::Round, &round);
+        bump(env, &DataKey::Round);
+
+        env.events().publish(
+            (TOPIC_MAX_ROUNDS,),
+            (round.round_number, survivors.len(), EVENT_VERSION),
+        );
+        return Ok(round);
+    }
+
+    #[cfg(debug_assertions)]
+    let before_round_number = round.round_number;
+
+    let heads_key = DataKey::HeadsSubmitters(round.round_number);
+    let tails_key = DataKey::TailsSubmitters(round.round_number);
+    let heads_submitters = get_submitters(env, &heads_key);
+    let tails_submitters = get_submitters(env, &tails_key);
+    let heads_count = heads_submitters.len();
+    let tails_count = tails_submitters.len();
+
+    let surviving_choice = choose_surviving_side(env, heads_count, tails_count);
+    let eliminated_players = match surviving_choice {
+        Some(Choice::Heads) => tails_submitters,
+        Some(Choice::Tails) => heads_submitters,
+        None => Vec::new(env),
+    };
+
+    let mut eliminated_count = 0u32;
+    for player in eliminated_players.iter() {
+        let survivor_key = DataKey::Survivor(player.clone());
+        if storage(env).has(&survivor_key) {
+            storage(env).remove(&survivor_key);
+            let eliminated_key = DataKey::Eliminated(player.clone());
+            storage(env).set(&eliminated_key, &true);
+            bump(env, &eliminated_key);
+            eliminated_count += 1;
+        }
+    }
+
+    let survivor_count: u32 = env
+        .storage()
+        .instance()
+        .get(&SURVIVOR_COUNT_KEY)
+        .unwrap_or(0u32);
+    let updated_survivor_count = survivor_count
+        .checked_sub(eliminated_count)
+        .ok_or(ArenaError::InvalidAmount)?;
+    env.storage()
+        .instance()
+        .set(&SURVIVOR_COUNT_KEY, &updated_survivor_count);
+    if updated_survivor_count <= 1 {
+        env.storage().instance().set(&GAME_FINISHED_KEY, &true);
+    }
+    // Always mark the round resolved so a second call (deadline fallback after
+    // auto-advance, or duplicate resolve_round calls) is rejected cleanly.
+    round.finished = true;
+
+    #[cfg(debug_assertions)]
+    {
+        crate::invariants::check_round_flags(&round)
+            .expect("resolve_round: round flags invariant violated");
+        crate::invariants::check_round_number_monotonic(
+            before_round_number,
+            round.round_number,
+        )
+        .expect("resolve_round: round number monotonic invariant violated");
+    }
+
+    storage(env).set(&DataKey::Round, &round);
+    bump(env, &DataKey::Round);
+
+    if env
+        .storage()
+        .instance()
+        .get::<_, bool>(&GAME_FINISHED_KEY)
+        .unwrap_or(false)
+    {
+        set_state(env, ArenaState::Completed);
+    }
+
+    env.events().publish(
+        (TOPIC_ROUND_RESOLVED,),
+        (
+            round.round_number,
+            heads_count,
+            tails_count,
+            outcome_symbol(&surviving_choice),
+            eliminated_count,
+            updated_survivor_count,
+            EVENT_VERSION,
+        ),
+    );
+
+    Ok(round)
+}
+
+fn get_config(env: &Env) -> Result<ArenaConfig, ArenaError> {
     storage(env)
-        .get(&DataKey::Config(arena_id))
+        .get(&DataKey::Config)
         .ok_or(ArenaError::NotInitialized)
 }
 
@@ -1347,8 +1428,12 @@ fn bump(env: &Env, key: &DataKey) {
 
 #[cfg(test)]
 mod abi_guard;
+#[cfg(test)]
+mod auto_advance_tests;
 #[cfg(all(test, feature = "integration-tests"))]
 mod integration_tests;
+#[cfg(test)]
+mod metadata_tests;
 #[cfg(test)]
 mod state_machine_tests;
 #[cfg(test)]
