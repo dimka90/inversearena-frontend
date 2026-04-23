@@ -32,7 +32,17 @@
     "TokenConfigurationLocked": 28,
     "UpgradeAlreadyPending": 29,
     "WinnerAlreadySet": 30,
-    "WinnerNotSet": 31
+    "WinnerNotSet": 31,
+    "AlreadyCancelled": 32,
+    "InvalidMaxRounds": 33,
+    "NameTooLong": 34,
+    "NameEmpty": 35,
+    "DescriptionTooLong": 36,
+    "NoCommitment": 37,
+    "CommitmentMismatch": 38,
+    "RevealDeadlinePassed": 39,
+    "CommitDeadlinePassed": 40,
+    "AlreadyCommitted": 41
   },
   "event_topics": [
     "UP_PROP",
@@ -61,7 +71,8 @@
     "get_arena_state",
     "join",
     "start_round",
-    "submit_choice",
+    "commit_choice",
+    "reveal_choice",
     "timeout_round",
     "resolve_round",
     "get_config",
@@ -70,6 +81,14 @@
     "propose_upgrade",
     "execute_upgrade",
     "cancel_upgrade",
-    "pending_upgrade"
+    "pending_upgrade",
+    "set_max_rounds",
+    "is_cancelled",
+    "leave",
+    "get_user_state",
+    "get_full_state",
+    "set_metadata",
+    "get_metadata",
+    "state"
   ]
 }

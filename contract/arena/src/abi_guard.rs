@@ -48,6 +48,16 @@ fn arena_error_codes_match_abi_snapshot() {
         ("UpgradeAlreadyPending", ArenaError::UpgradeAlreadyPending),
         ("WinnerAlreadySet", ArenaError::WinnerAlreadySet),
         ("WinnerNotSet", ArenaError::WinnerNotSet),
+        ("AlreadyCancelled", ArenaError::AlreadyCancelled),
+        ("InvalidMaxRounds", ArenaError::InvalidMaxRounds),
+        ("NameTooLong", ArenaError::NameTooLong),
+        ("NameEmpty", ArenaError::NameEmpty),
+        ("DescriptionTooLong", ArenaError::DescriptionTooLong),
+        ("NoCommitment", ArenaError::NoCommitment),
+        ("CommitmentMismatch", ArenaError::CommitmentMismatch),
+        ("RevealDeadlinePassed", ArenaError::RevealDeadlinePassed),
+        ("CommitDeadlinePassed", ArenaError::CommitDeadlinePassed),
+        ("AlreadyCommitted", ArenaError::AlreadyCommitted),
     ];
 
     assert_eq!(
@@ -93,7 +103,8 @@ fn exported_functions_match_abi_snapshot() {
         "get_arena_state",
         "join",
         "start_round",
-        "submit_choice",
+        "commit_choice",
+        "reveal_choice",
         "timeout_round",
         "resolve_round",
         "get_config",
@@ -103,6 +114,14 @@ fn exported_functions_match_abi_snapshot() {
         "execute_upgrade",
         "cancel_upgrade",
         "pending_upgrade",
+        "set_max_rounds",
+        "is_cancelled",
+        "leave",
+        "get_user_state",
+        "get_full_state",
+        "set_metadata",
+        "get_metadata",
+        "state",
     ];
 
     assert_eq!(
