@@ -1188,7 +1188,7 @@ impl ArenaContract {
         rounds::get_round_choices(&env, round_number).get(player)
     }
 
-    pub fn get_arena_state(env: Env) -> Result<ArenaSnapshot, ArenaError> {
+    pub fn get_arena_snapshot(env: Env) -> Result<ArenaSnapshot, ArenaError> {
         let arena_state = get_state(&env);
         let config = get_config(&env)?;
         let round = get_round(&env)?;
@@ -1213,7 +1213,7 @@ impl ArenaContract {
         })
     }
 
-    pub fn get_arena_state_view(env: Env) -> Result<ArenaStateView, ArenaError> {
+    pub fn get_arena_state(env: Env) -> Result<ArenaStateView, ArenaError> {
         let round = get_round(&env)?;
         let count: u32 = env.storage().instance().get(&SURVIVOR_COUNT_KEY).unwrap_or(0);
         let capacity: u32 = env.storage().instance().get(&CAPACITY_KEY).unwrap_or(bounds::MAX_ARENA_PARTICIPANTS);
@@ -1256,7 +1256,7 @@ impl ArenaContract {
     }
 
     pub fn get_full_state(env: Env, player: Address) -> Result<FullStateView, ArenaError> {
-        let arena = Self::get_arena_state_view(env.clone())?;
+        let arena = Self::get_arena_state(env.clone())?;
         let user = Self::get_user_state(env, player);
         Ok(FullStateView {
             survivors_count: arena.survivors_count, max_capacity: arena.max_capacity,

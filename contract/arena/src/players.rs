@@ -31,6 +31,9 @@ pub fn join(env: &Env, player: Address, amount: i128) -> Result<(), ArenaError> 
     bump(env, &survivor_key);
     env.storage().instance().set(&SURVIVOR_COUNT_KEY, &(count + 1));
 
+    let pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+    env.storage().instance().set(&PRIZE_POOL_KEY, &pool.checked_add(amount).ok_or(ArenaError::InvalidAmount)?);
+
     let mut all_players: Vec<Address> = env.storage().persistent().get(&DataKey::AllPlayers).unwrap_or(Vec::new(env));
     all_players.push_back(player.clone());
     env.storage().persistent().set(&DataKey::AllPlayers, &all_players);
