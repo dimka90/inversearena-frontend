@@ -523,3 +523,6 @@ mod test;
 
 #[cfg(test)]
 mod integration_tests;
+
+#[cfg(test)]
+mod snapshot_test;

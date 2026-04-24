@@ -694,3 +694,4 @@ fn record_receipt(
 
 #[cfg(test)]
 mod test;
+mod snapshot_test;

@@ -1315,3 +1315,6 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod snapshot_test;

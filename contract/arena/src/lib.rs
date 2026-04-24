@@ -2114,3 +2114,4 @@ mod mutation_tests;
 mod state_machine_tests;
 #[cfg(test)]
 mod test;
+#[cfg(test)] mod snapshot_test;
