@@ -663,3 +663,48 @@ fn test_unauthorized_host_stake_methods() {
         Err(Ok(StakingError::Unauthorized))
     );
 }
+
+/// Verify that the configured factory address is authorized to call lock_host_stake.
+#[test]
+fn test_factory_caller_can_lock_host_stake() {
+    let (env, admin, staker, client, _token) = setup();
+    let factory = Address::generate(&env);
+
+    // Stake some tokens so there is balance to lock.
+    client.stake(&staker, &500i128);
+
+    // Register factory address.
+    client.set_factory(&factory);
+
+    // Factory should be able to lock host stake.
+    client.lock_host_stake(&factory, &staker, &1u64, &200i128);
+
+    // Available stake should be reduced by the locked amount.
+    assert_eq!(client.get_host_stake(&staker), 300i128);
+
+    // Factory should also be able to release the lock.
+    client.release_host_stake(&factory, &staker, &1u64);
+    assert_eq!(client.get_host_stake(&staker), 500i128);
+
+    // Sanity: admin can also lock/release.
+    client.lock_host_stake(&admin, &staker, &2u64, &100i128);
+    assert_eq!(client.get_host_stake(&staker), 400i128);
+    client.release_host_stake(&admin, &staker, &2u64);
+    assert_eq!(client.get_host_stake(&staker), 500i128);
+}
+
+/// Verify that an arbitrary caller cannot lock host stake even after a factory is set.
+#[test]
+fn test_non_factory_caller_rejected_after_factory_set() {
+    let (env, _admin, staker, client, _token) = setup();
+    let factory = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.stake(&staker, &500i128);
+    client.set_factory(&factory);
+
+    assert_eq!(
+        client.try_lock_host_stake(&attacker, &staker, &1u64, &100i128),
+        Err(Ok(StakingError::Unauthorized))
+    );
+}
