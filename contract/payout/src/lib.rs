@@ -129,6 +129,10 @@ pub enum PayoutError {
     TimelockNotExpired = 8,
     UpgradeAlreadyPending = 9,
     HashMismatch = 10,
+    NoPendingAdminTransfer = 11,
+    AdminTransferExpired = 12,
+    Unauthorized = 13,
+    NotInitialized = 14,
     NotInitialized = 11,
     NoPendingAdminTransfer = 12,
     AdminTransferExpired = 13,
@@ -772,3 +776,4 @@ fn record_receipt(
 
 #[cfg(test)]
 mod test;
+#[cfg(test)] mod snapshot_test;

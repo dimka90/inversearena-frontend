@@ -1,8 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{
-    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Vec, contract, contracterror,
-    contractimpl, contracttype, panic_with_error, symbol_short, token,
+use soroban_sdk::{IntoVal,
+    Address, Bytes, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl,
+    contracttype, panic_with_error, symbol_short, token,
 };
 
 mod bounds;
@@ -112,10 +112,6 @@ pub enum ArenaError {
     NameTooLong = 34,
     NameEmpty = 35,
     DescriptionTooLong = 36,
-    NoCommitment = 37,
-    CommitmentMismatch = 38,
-    RevealDeadlinePassed = 39,
-    CommitDeadlinePassed = 40,
     AlreadyCommitted = 41,
     DeadlineTooSoon = 42,
     DeadlineTooFar = 43,
@@ -2380,3 +2376,4 @@ mod mutation_tests;
 mod state_machine_tests;
 #[cfg(test)]
 mod test;
+#[cfg(test)] mod snapshot_test;

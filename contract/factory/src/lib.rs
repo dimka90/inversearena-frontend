@@ -6,7 +6,7 @@ use soroban_sdk::{
 };
 
 #[cfg(test)]
-use arena::ArenaContract;
+use arena::ArenaContract; 
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -1652,3 +1652,6 @@ fn matches_arena_filter(
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod snapshot_test;
