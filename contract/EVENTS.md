@@ -52,9 +52,26 @@ address, amounts) is in the data payload so indexers can filter on `STAKED` /
 
 ## Payout Contract
 
-| Topic         | Emitting Function         | Data Fields                           |
-|---------------|---------------------------|---------------------------------------|
-| `PAYOUT`      | `distribute_winnings()`   | `(v, winner: Address, amount: i128, currency: Symbol)` |
+| Topic    | Emitting Function            | Data Fields                                                               |
+|----------|------------------------------|---------------------------------------------------------------------------|
+| `PAYOUT` | `distribute_winnings()`      | `(winner: Address, winner_amount: i128, fee_amount: i128, currency: Symbol)` |
+| `PAYOUT` | `distribute_prize()`         | `(winner: Address, share: i128, currency: Address)`                       |
+| `DUST`   | `distribute_prize()`         | `(treasury: Address, dust: i128, currency: Address)`                      |
+| `PAYOUT` | `distribute_split_payout()`  | `(winner: Address, amount: i128, currency: Address)`                      |
+| `RECOV`  | `emergency_recover_tokens()` | `(recipient: Address, amount: i128, token_address: Address)`              |
+| `TOK_SET`| `set_currency_token()`       | `(v: u32, currency: Symbol, token_address: Address)`                      |
+
+---
+
+## Pause-Exempt Operations (Policy)
+
+Emergency pause intentionally does not block recovery/governance controls. The following families are pause-exempt across contracts:
+
+- Upgrade governance: `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`
+- Two-step admin transfer: `propose_admin`, `accept_admin`, `cancel_admin_transfer`
+- Incident-response token rotation in payout: `set_currency_token`
+
+These exemptions are covered by contract tests in each module.
 
 ---
 

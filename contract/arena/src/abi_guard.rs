@@ -44,7 +44,10 @@ fn arena_error_codes_match_abi_snapshot() {
         ("NoPendingUpgrade", ArenaError::NoPendingUpgrade),
         ("TimelockNotExpired", ArenaError::TimelockNotExpired),
         ("GameNotFinished", ArenaError::GameNotFinished),
-        ("TokenConfigurationLocked", ArenaError::TokenConfigurationLocked),
+        (
+            "TokenConfigurationLocked",
+            ArenaError::TokenConfigurationLocked,
+        ),
         ("UpgradeAlreadyPending", ArenaError::UpgradeAlreadyPending),
         ("WinnerAlreadySet", ArenaError::WinnerAlreadySet),
         ("WinnerNotSet", ArenaError::WinnerNotSet),
@@ -53,16 +56,20 @@ fn arena_error_codes_match_abi_snapshot() {
         ("NameTooLong", ArenaError::NameTooLong),
         ("NameEmpty", ArenaError::NameEmpty),
         ("DescriptionTooLong", ArenaError::DescriptionTooLong),
-        ("NoCommitment", ArenaError::NoCommitment),
-        ("CommitmentMismatch", ArenaError::CommitmentMismatch),
-        ("RevealDeadlinePassed", ArenaError::RevealDeadlinePassed),
-        ("CommitDeadlinePassed", ArenaError::CommitDeadlinePassed),
         ("AlreadyCommitted", ArenaError::AlreadyCommitted),
         ("DeadlineTooSoon", ArenaError::DeadlineTooSoon),
         ("DeadlineTooFar", ArenaError::DeadlineTooFar),
         ("DeadlineNotReached", ArenaError::DeadlineNotReached),
         ("HashMismatch", ArenaError::HashMismatch),
         ("InvalidGracePeriod", ArenaError::InvalidGracePeriod),
+        ("NotWhitelisted", ArenaError::NotWhitelisted),
+        ("BatchAlreadyInProgress", ArenaError::BatchAlreadyInProgress),
+        ("NoBatchInProgress", ArenaError::NoBatchInProgress),
+        ("BatchNotComplete", ArenaError::BatchNotComplete),
+        ("Unauthorized", ArenaError::Unauthorized),
+        ("NoPendingAdminTransfer", ArenaError::NoPendingAdminTransfer),
+        ("AdminTransferExpired", ArenaError::AdminTransferExpired),
+        ("VaultNotSet", ArenaError::VaultNotSet),
     ];
 
     assert_eq!(
@@ -130,6 +137,16 @@ fn exported_functions_match_abi_snapshot() {
         "state",
         "get_arena_state_view",
         "init_factory",
+        "cancel_arena",
+        "set_vault",
+        "set_fallback_vault",
+        "toggle_vault_active",
+        "deposit_to_vault",
+        "complete_with_yield",
+        "propose_admin",
+        "accept_admin",
+        "cancel_admin_transfer",
+        "pending_admin_transfer",
     ];
 
     assert_eq!(
@@ -151,7 +168,7 @@ fn event_topics_match_abi_snapshot() {
 
     let expected: &[&str] = &[
         "UP_PROP", "UP_EXEC", "UP_CANC", "PAUSED", "UNPAUSED", "R_START", "R_TOUT", "RSLVD",
-        "WIN_SET", "CLAIM",
+        "WIN_SET", "CLAIM", "Y_HARV", "V_FALL", "AD_PROP", "AD_DONE", "AD_CANC",
     ];
 
     assert_eq!(

@@ -13,7 +13,7 @@ It is meant to help:
 | --- | --- | --- |
 | `factory` | Pool creation and protocol administration | Maintains admin state, host whitelist, arena WASM hash, minimum stake rules, and emits pool creation events |
 | `arena` | Round lifecycle and game state | Stores round configuration, player submissions, timeout state, pause flag, admin controls, and upgrade timelock |
-| `staking` | Protocol staking | Intended to accept XLM staking deposits and track staker shares; currently still minimal in this repo |
+| `staking` | Protocol staking | Accepts staking deposits, tracks staker shares, locks host stake for arenas, and manages reward distribution |
 | `payout` | Winnings distribution | Records idempotent payout executions and exposes payout lookup helpers |
 | External token contracts | Asset movement | XLM SAC and token contracts used by frontend transaction builders for stake and pool-related flows |
 
@@ -150,8 +150,13 @@ Trust notes:
 
 ### Staking
 
-- The current contract is still a placeholder, so its final ownership model is not fully implemented yet.
-- Based on the architecture direction, it should define admin or operator authority explicitly before handling real funds.
+- Has its own `ADMIN` instance key.
+- The admin can:
+  - change admin
+  - set factory address (with handshake verification)
+  - configure lock period, min/max stake, and reward settings
+  - deposit rewards and manage reward pool
+  - propose, execute, and cancel upgrades through the timelock flow
 
 ## Authority Model Summary
 
@@ -164,6 +169,20 @@ Trust notes:
 | Submit round choice | No | No | No | Yes | No |
 | Distribute winnings | No | No | Yes | No | No |
 | Stake XLM | No | No | No | Yes | No |
+
+## Pause Exemption Matrix
+
+Emergency pause blocks normal state transitions, but some admin recovery controls are intentionally pause-exempt so incident response can proceed without unpausing first.
+
+| Contract | Functions blocked while paused | Pause-exempt controls |
+| --- | --- | --- |
+| `arena` | Gameplay state transitions (`join`, `start_round`, `submit_choice`, `timeout_round`, `resolve_round`, `cancel_arena`) | `pause`, `unpause`, `set_token`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+| `factory` | Pool/token policy writes (`create_pool`, `add_supported_token`, `remove_supported_token`, `set_min_stake`, other write paths guarded by `require_not_paused`) | `pause`, `unpause`, `set_admin`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+| `payout` | Payout execution flows (`distribute_winnings`, `distribute_prize`) | `pause`, `unpause`, `set_currency_token`, `set_treasury`, `emergency_recover_tokens`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+| `staking` | User staking/reward flows (`stake`, `unstake`, `deposit_rewards`, `claim_rewards`, `compound`) | `pause`, `unpause`, config/admin endpoints, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `propose_admin`, `accept_admin`, `cancel_admin_transfer` |
+
+Operational note:
+- `payout.set_currency_token` is intentionally pause-exempt so compromised currency integrations can be rotated during an active incident.
 
 ## Security Review Notes
 

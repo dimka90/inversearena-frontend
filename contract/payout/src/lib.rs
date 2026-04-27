@@ -1,23 +1,47 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
-    panic_with_error, symbol_short, token,
+    Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contracterror, contractimpl,
+    contracttype, panic_with_error, symbol_short, token,
+};
+#[path = "../../shared/admin_transfer.rs"]
+mod admin_transfer_utils;
+#[path = "../../shared/upgrade.rs"]
+mod upgrade_utils;
+use admin_transfer_utils::{
+    AdminTransferErrors, AdminTransferKeys, accept_admin_transfer as accept_admin_transfer_flow,
+    cancel_admin_transfer as cancel_admin_transfer_flow,
+    pending_admin_transfer as pending_admin_transfer_flow,
+    propose_admin_transfer as propose_admin_transfer_flow,
+};
+use upgrade_utils::{
+    ExecuteTimePolicy, UpgradeErrors, UpgradeKeys, UpgradeTopics,
+    cancel_upgrade as cancel_upgrade_flow, execute_upgrade as execute_upgrade_flow,
+    pending_upgrade as pending_upgrade_flow, propose_upgrade as propose_upgrade_flow,
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
+const PENDING_ADMIN_KEY: Symbol = symbol_short!("P_ADMIN");
+const ADMIN_EXPIRY_KEY: Symbol = symbol_short!("A_EXP");
 const TREASURY_KEY: Symbol = symbol_short!("TREAS");
 const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
+
+const ADMIN_TRANSFER_EXPIRY: u64 = 7 * 24 * 60 * 60;
 const PAYOUT_COUNT_KEY: Symbol = symbol_short!("P_COUNT");
 const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const TOPIC_PAYOUT_EXECUTED: Symbol = symbol_short!("PAYOUT");
 const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
+const TOPIC_RECOVERY: Symbol = symbol_short!("RECOVER");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_CURRENCY_TOKEN_SET: Symbol = symbol_short!("TOK_SET");
 const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
 const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
+const TOPIC_ADMIN_PROPOSED: Symbol = symbol_short!("AD_PROP");
+const TOPIC_ADMIN_ACCEPTED: Symbol = symbol_short!("AD_DONE");
+const TOPIC_ADMIN_CANCELLED: Symbol = symbol_short!("AD_CANC");
 
 const FACTORY_KEY: Symbol = symbol_short!("FACTORY");
 
@@ -57,6 +81,16 @@ pub enum DataKey {
     SplitPayoutBatch(u32),
     PayoutHistory(u64),
     ArenaPayout(u64),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FactoryArenaMetadata {
+    pub pool_id: u32,
+    pub creator: Address,
+    pub capacity: u32,
+    pub stake_amount: i128,
+    pub win_fee_bps: u32,
 }
 
 #[contracttype]
@@ -111,6 +145,12 @@ pub enum PayoutError {
     TimelockNotExpired = 8,
     UpgradeAlreadyPending = 9,
     HashMismatch = 10,
+    NoPendingAdminTransfer = 11,
+    AdminTransferExpired = 12,
+    Unauthorized = 13,
+    NotInitialized = 14,
+    RecoveryAmountInvalid = 15,
+    ArithmeticOverflow = 16,
 }
 
 #[contract]
@@ -140,7 +180,7 @@ impl PayoutContract {
         env.storage()
             .instance()
             .get(&ADMIN_KEY)
-            .expect("not initialized")
+            .unwrap_or_else(|| panic_with_error!(&env, PayoutError::NotInitialized))
     }
 
     pub fn set_treasury(env: Env, treasury: Address) {
@@ -160,18 +200,14 @@ impl PayoutContract {
     /// Admin-only. Used so `distribute_winnings` can transfer tokens on-chain.
     pub fn set_currency_token(env: Env, symbol: Symbol, token_address: Address) {
         let admin = Self::admin(env.clone());
-        if env
-            .storage()
-            .instance()
-            .get::<_, bool>(&PAUSED_KEY)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, PayoutError::Paused);
-        }
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::CurrencyToken(symbol), &token_address);
+            .set(&DataKey::CurrencyToken(symbol.clone()), &token_address);
+        env.events().publish(
+            (TOPIC_CURRENCY_TOKEN_SET,),
+            (EVENT_VERSION, symbol, token_address),
+        );
     }
 
     /// Distribute a payout to a single winner.
@@ -203,7 +239,7 @@ impl PayoutContract {
             .storage()
             .instance()
             .get(&FACTORY_KEY)
-            .expect("factory not initialized");
+            .ok_or(PayoutError::NotInitialized)?;
 
         let arena_id = pool_id as u64;
         let arena_ref: ArenaRef = env.invoke_contract(
@@ -248,7 +284,32 @@ impl PayoutContract {
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 
-        // Transfer tokens to winner if a token address is registered for this currency.
+        let mut fee_amount: i128 = 0;
+        let mut winner_amount: i128 = amount;
+
+        let arena_meta: Option<FactoryArenaMetadata> = env.invoke_contract(
+            &factory,
+            &soroban_sdk::Symbol::new(&env, "get_arena"),
+            soroban_sdk::vec![&env, pool_id.into_val(&env)],
+        );
+        let fee_bps = arena_meta.map(|m| m.win_fee_bps).unwrap_or_else(|| {
+            env.invoke_contract(
+                &factory,
+                &soroban_sdk::Symbol::new(&env, "current_fee_bps"),
+                soroban_sdk::vec![&env],
+            )
+        });
+        if fee_bps > 0 {
+            fee_amount = amount
+                .checked_mul(fee_bps as i128)
+                .and_then(|v| v.checked_div(10_000i128))
+                .ok_or(PayoutError::ArithmeticOverflow)?;
+            winner_amount = amount
+                .checked_sub(fee_amount)
+                .ok_or(PayoutError::ArithmeticOverflow)?;
+        }
+
+        // Transfer tokens to winner and fee treasury if token address exists.
         if let Some(token_address) = env
             .storage()
             .instance()
@@ -257,14 +318,35 @@ impl PayoutContract {
             token::Client::new(&env, &token_address).transfer(
                 &env.current_contract_address(),
                 &winner,
-                &amount,
+                &winner_amount,
             );
+            if fee_amount > 0 {
+                token::Client::new(&env, &token_address).transfer(
+                    &env.current_contract_address(),
+                    &factory,
+                    &fee_amount,
+                );
+                env.invoke_contract::<()>(
+                    &factory,
+                    &soroban_sdk::Symbol::new(&env, "record_win_fee"),
+                    soroban_sdk::vec![&env, fee_amount.into_val(&env)],
+                );
+            }
         }
 
-        env.events()
-            .publish((TOPIC_PAYOUT_EXECUTED,), (winner, amount, currency));
+        env.events().publish(
+            (TOPIC_PAYOUT_EXECUTED,),
+            (winner, winner_amount, fee_amount, currency),
+        );
 
-        record_receipt(&env, pool_id as u64, payout_data.winner, amount, 0, None);
+        record_receipt(
+            &env,
+            pool_id as u64,
+            payout_data.winner,
+            winner_amount,
+            fee_amount,
+            None,
+        );
 
         Ok(())
     }
@@ -297,6 +379,32 @@ impl PayoutContract {
         env.storage().persistent().get(&payout_key)
     }
 
+    /// **Deprecated** — use [`PayoutContract::distribute_split_payout`] for multi-winner
+    /// distributions.
+    ///
+    /// This function remains for backward compatibility only. It performs an equal split of
+    /// `total_prize` across all `winners` and routes any integer remainder (dust) to the
+    /// registered treasury address.
+    ///
+    /// # Migration
+    /// Replace `distribute_prize(game_id, total_prize, winners, currency)` with
+    /// `distribute_split_payout(game_id, winners, total_prize, currency)`.
+    ///
+    /// Key differences from `distribute_split_payout`:
+    /// - Dust goes to the treasury, not to the first winner.
+    /// - Per-winner receipts are **not** stored; only a batch marker is written.
+    /// - Requires a treasury address to be set via `set_treasury`.
+    ///
+    /// # Errors
+    /// * `AlreadyPaid`    — already distributed for `game_id`.
+    /// * `InvalidAmount`  — `total_prize` ≤ 0.
+    /// * `NoWinners`      — `winners` is empty.
+    /// * `TreasuryNotSet` — no treasury address registered.
+    /// * `Paused`         — contract is paused.
+    #[deprecated(
+        note = "Use `distribute_split_payout` instead; \
+                see the function doc comment for the migration guide."
+    )]
     pub fn distribute_prize(
         env: Env,
         game_id: u32,
@@ -378,14 +486,30 @@ impl PayoutContract {
             .get(&DataKey::ArenaPayout(arena_id))
     }
 
+    /// **Deprecated** — use [`PayoutContract::is_split_payout_distributed`] for the
+    /// canonical idempotency check that corresponds to `distribute_split_payout`.
+    #[deprecated(
+        note = "Use `is_split_payout_distributed` instead, which corresponds to the \
+                canonical `distribute_split_payout` entrypoint."
+    )]
     pub fn is_prize_distributed(env: Env, game_id: u32) -> bool {
         env.storage().instance().has(&DataKey::PrizePayout(game_id))
     }
 
-    /// Splits and transfers `total_amount` across `winners`.
-    ///
-    /// Remainder dust from integer division is sent to the first winner so
+    /// Canonical multi-winner distribution entrypoint. Splits `total_amount` across
+    /// `winners`; remainder dust from integer division is sent to the first winner so
     /// no funds are left stranded in the contract.
+    ///
+    /// Prefer this function over the deprecated `distribute_prize`. Unlike
+    /// `distribute_prize`, this function stores per-winner receipts (queryable via
+    /// `get_split_payout_receipt`), does not require a treasury to be configured, and
+    /// routes dust to the first winner rather than a separate treasury address.
+    ///
+    /// # Errors
+    /// * `AlreadyPaid`   — already distributed for `arena_id`.
+    /// * `InvalidAmount` — `total_amount` ≤ 0.
+    /// * `NoWinners`     — `winners` is empty.
+    /// * `Paused`        — contract is paused.
     pub fn distribute_split_payout(
         env: Env,
         arena_id: u32,
@@ -440,9 +564,11 @@ impl PayoutContract {
             };
             let receipt_key = DataKey::SplitPayout(arena_id, winner.clone());
             env.storage().persistent().set(&receipt_key, &receipt);
-            env.storage()
-                .persistent()
-                .extend_ttl(&receipt_key, PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
+            env.storage().persistent().extend_ttl(
+                &receipt_key,
+                PAYOUT_TTL_THRESHOLD,
+                PAYOUT_TTL_EXTEND_TO,
+            );
 
             env.events()
                 .publish((TOPIC_PAYOUT_EXECUTED,), (winner, amount, currency.clone()));
@@ -499,44 +625,48 @@ impl PayoutContract {
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), PayoutError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        if env.storage().instance().has(&PENDING_HASH_KEY) {
-            return Err(PayoutError::UpgradeAlreadyPending);
-        }
-        let execute_after: u64 = env.ledger().timestamp() + TIMELOCK_PERIOD;
-        env.storage().instance().set(&PENDING_HASH_KEY, &new_wasm_hash);
-        env.storage().instance().set(&EXECUTE_AFTER_KEY, &execute_after);
-        env.events().publish(
-            (TOPIC_UPGRADE_PROPOSED,),
-            (EVENT_VERSION, new_wasm_hash, execute_after),
-        );
-        Ok(())
+        propose_upgrade_flow(
+            &env,
+            UpgradeKeys {
+                pending_hash: &PENDING_HASH_KEY,
+                execute_after: &EXECUTE_AFTER_KEY,
+            },
+            UpgradeTopics {
+                proposed: &TOPIC_UPGRADE_PROPOSED,
+                executed: &TOPIC_UPGRADE_EXECUTED,
+                cancelled: &TOPIC_UPGRADE_CANCELLED,
+            },
+            EVENT_VERSION,
+            TIMELOCK_PERIOD,
+            &new_wasm_hash,
+            PayoutError::UpgradeAlreadyPending,
+        )
     }
 
     pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), PayoutError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        let execute_after: u64 = env
-            .storage()
-            .instance()
-            .get(&EXECUTE_AFTER_KEY)
-            .ok_or(PayoutError::NoPendingUpgrade)?;
-        if env.ledger().timestamp() < execute_after {
-            return Err(PayoutError::TimelockNotExpired);
-        }
-        let stored_hash: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&PENDING_HASH_KEY)
-            .ok_or(PayoutError::NoPendingUpgrade)?;
-        if stored_hash != expected_hash {
-            return Err(PayoutError::HashMismatch);
-        }
-        env.storage().instance().remove(&PENDING_HASH_KEY);
-        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
-        env.events().publish(
-            (TOPIC_UPGRADE_EXECUTED,),
-            (EVENT_VERSION, stored_hash.clone()),
-        );
+        let stored_hash = execute_upgrade_flow(
+            &env,
+            UpgradeKeys {
+                pending_hash: &PENDING_HASH_KEY,
+                execute_after: &EXECUTE_AFTER_KEY,
+            },
+            UpgradeTopics {
+                proposed: &TOPIC_UPGRADE_PROPOSED,
+                executed: &TOPIC_UPGRADE_EXECUTED,
+                cancelled: &TOPIC_UPGRADE_CANCELLED,
+            },
+            EVENT_VERSION,
+            &expected_hash,
+            UpgradeErrors {
+                no_pending: PayoutError::NoPendingUpgrade,
+                timelock_not_expired: PayoutError::TimelockNotExpired,
+                hash_mismatch: PayoutError::HashMismatch,
+                malformed_state: None,
+            },
+            ExecuteTimePolicy::AtOrAfter,
+        )?;
         env.deployer().update_current_contract_wasm(stored_hash);
         Ok(())
     }
@@ -544,22 +674,131 @@ impl PayoutContract {
     pub fn cancel_upgrade(env: Env) -> Result<(), PayoutError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        if !env.storage().instance().has(&PENDING_HASH_KEY) {
-            return Err(PayoutError::NoPendingUpgrade);
-        }
-        env.storage().instance().remove(&PENDING_HASH_KEY);
-        env.storage().instance().remove(&EXECUTE_AFTER_KEY);
-        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
-        Ok(())
+        cancel_upgrade_flow(
+            &env,
+            UpgradeKeys {
+                pending_hash: &PENDING_HASH_KEY,
+                execute_after: &EXECUTE_AFTER_KEY,
+            },
+            UpgradeTopics {
+                proposed: &TOPIC_UPGRADE_PROPOSED,
+                executed: &TOPIC_UPGRADE_EXECUTED,
+                cancelled: &TOPIC_UPGRADE_CANCELLED,
+            },
+            EVENT_VERSION,
+            PayoutError::NoPendingUpgrade,
+        )
     }
 
     pub fn pending_upgrade(env: Env) -> Option<(BytesN<32>, u64)> {
-        let hash: Option<BytesN<32>> = env.storage().instance().get(&PENDING_HASH_KEY);
-        let after: Option<u64> = env.storage().instance().get(&EXECUTE_AFTER_KEY);
-        match (hash, after) {
-            (Some(h), Some(a)) => Some((h, a)),
-            _ => None,
+        pending_upgrade_flow(
+            &env,
+            UpgradeKeys {
+                pending_hash: &PENDING_HASH_KEY,
+                execute_after: &EXECUTE_AFTER_KEY,
+            },
+        )
+    }
+
+    /// Admin-only recovery endpoint for stranded tokens.
+    pub fn emergency_recover_tokens(
+        env: Env,
+        token_address: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), PayoutError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if amount <= 0 {
+            return Err(PayoutError::RecoveryAmountInvalid);
         }
+        token::Client::new(&env, &token_address).transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &amount,
+        );
+        env.events()
+            .publish((TOPIC_RECOVERY,), (recipient, amount, token_address));
+        Ok(())
+    }
+
+    // ── Two-step admin transfer ───────────────────────────────────────────────
+
+    /// Propose a new admin. The pending admin has 7 days to call `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), PayoutError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let expires_at = propose_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            ADMIN_TRANSFER_EXPIRY,
+        );
+        env.events().publish(
+            (TOPIC_ADMIN_PROPOSED,),
+            (EVENT_VERSION, admin, new_admin, expires_at),
+        );
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Must be called by the proposed new admin
+    /// within 7 days.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), PayoutError> {
+        new_admin.require_auth();
+        let old_admin = Self::admin(env.clone());
+        accept_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            &new_admin,
+            AdminTransferErrors {
+                no_pending: PayoutError::NoPendingAdminTransfer,
+                unauthorized: PayoutError::Unauthorized,
+                expired: PayoutError::AdminTransferExpired,
+            },
+        )?;
+        env.events().publish(
+            (TOPIC_ADMIN_ACCEPTED,),
+            (EVENT_VERSION, old_admin, new_admin),
+        );
+        Ok(())
+    }
+
+    /// Cancel a pending admin transfer. Only the current admin may call this.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), PayoutError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        cancel_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+            PayoutError::NoPendingAdminTransfer,
+        )?;
+        env.events()
+            .publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
+        Ok(())
+    }
+
+    /// Return the pending admin address and expiry timestamp, or `None` if none.
+    pub fn pending_admin_transfer(env: Env) -> Option<(Address, u64)> {
+        pending_admin_transfer_flow(
+            &env,
+            AdminTransferKeys {
+                admin: &ADMIN_KEY,
+                pending_admin: &PENDING_ADMIN_KEY,
+                admin_expiry: &ADMIN_EXPIRY_KEY,
+            },
+        )
     }
 }
 
@@ -599,5 +838,7 @@ fn record_receipt(
         .set(&PAYOUT_COUNT_KEY, &(index + 1));
 }
 
+#[cfg(test)]
+mod snapshot_test;
 #[cfg(test)]
 mod test;

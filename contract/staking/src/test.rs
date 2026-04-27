@@ -42,6 +42,44 @@ fn setup() -> (
     )
 }
 
+fn assert_pool_invariants(client: &StakingContractClient<'_>, tracked: &[Address]) {
+    let total_staked = client.total_staked();
+    let total_shares = client.total_shares();
+
+    assert!(total_staked >= 0, "total_staked must never be negative");
+    assert!(total_shares >= 0, "total_shares must never be negative");
+
+    if total_staked == 0 {
+        assert_eq!(
+            total_shares, 0,
+            "total_shares must be zero when total_staked is zero"
+        );
+    }
+    if total_shares == 0 {
+        assert_eq!(
+            total_staked, 0,
+            "total_staked must be zero when total_shares is zero"
+        );
+    }
+
+    let mut sum_amounts = 0i128;
+    let mut sum_shares = 0i128;
+    for staker in tracked {
+        let pos = client.get_position(staker);
+        sum_amounts += pos.amount;
+        sum_shares += pos.shares;
+    }
+
+    assert_eq!(
+        sum_amounts, total_staked,
+        "position amounts must match total_staked"
+    );
+    assert_eq!(
+        sum_shares, total_shares,
+        "position shares must match total_shares"
+    );
+}
+
 // ── Issue #499: constructor-based init guard tests ───────────────────────────
 
 #[test]
@@ -255,7 +293,7 @@ fn unstake_rejects_insufficient_shares() {
     client.stake(&staker, &100_000_000i128);
     assert_eq!(
         client.try_unstake(&staker, &999_999_999),
-        Err(Ok(StakingError::InsufficientShares))
+        Err(Ok(StakingError::InsufficientBalance))
     );
 }
 
@@ -268,6 +306,42 @@ fn unstake_rejects_zero_shares() {
         client.try_unstake(&staker, &0),
         Err(Ok(StakingError::ZeroShares))
     );
+}
+
+#[test]
+fn invariants_hold_across_stake_unstake_claim_and_compound() {
+    let (env, admin, staker1, client, _token_client) = setup();
+    let staker2 = Address::generate(&env);
+    let token_admin = token::StellarAssetClient::new(&env, &client.token());
+    token_admin.mint(&staker2, &1_000_000_000i128);
+    token_admin.mint(&admin, &1_000_000_000i128);
+
+    let tracked = [staker1.clone(), staker2.clone()];
+
+    client.stake(&staker1, &400_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    client.stake(&staker2, &200_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    client.deposit_rewards(&admin, &120_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let _claimed = client.claim_rewards(&staker1);
+    assert_pool_invariants(&client, &tracked);
+
+    client.deposit_rewards(&admin, &80_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let _compounded = client.compound(&staker2);
+    assert_pool_invariants(&client, &tracked);
+
+    let _unstaked_partial = client.unstake(&staker1, &100_000_000i128);
+    assert_pool_invariants(&client, &tracked);
+
+    let staker2_full = client.get_position(&staker2).amount;
+    let _unstaked_full = client.unstake(&staker2, &staker2_full);
+    assert_pool_invariants(&client, &[staker1]);
 }
 
 // ── Issue #388: stake/unstake events ─────────────────────────────────────────
@@ -412,6 +486,35 @@ fn read_functions_unaffected_by_pause() {
     assert_eq!(client.total_shares(), 1_000i128);
     assert_eq!(client.staked_balance(&staker), 1_000i128);
     assert!(client.get_position(&staker).shares > 0);
+}
+
+#[test]
+fn pause_allows_staking_admin_transfer_controls() {
+    let (env, _admin, _staker, client, _token_client) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin_transfer().unwrap().0, new_admin);
+    client.accept_admin(&new_admin);
+
+    assert_eq!(client.admin(), new_admin);
+}
+
+#[test]
+fn pause_allows_staking_upgrade_governance() {
+    let (env, _admin, _staker, client, _token_client) = setup();
+    let hash = BytesN::from_array(&env, &[9u8; 32]);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    client.propose_upgrade(&hash);
+    assert_eq!(client.pending_upgrade().unwrap().0, hash);
+    client.cancel_upgrade();
+    assert!(client.pending_upgrade().is_none());
 }
 
 // ── Issue #518: upgrade timelock test suite (9 cases) ────────────────────────
@@ -614,4 +717,251 @@ fn get_staker_stats_reports_even_pool_share() {
 
     assert_eq!(client.get_staker_stats(&first).stake_share_bps, 5_000);
     assert_eq!(client.get_staker_stats(&second).stake_share_bps, 5_000);
+}
+
+#[test]
+fn update_config_requires_positive_min_stake() {
+    let (_env, _admin, _staker, client, _token) = setup();
+    let cfg = StakingConfig {
+        token_address: client.token(),
+        min_stake: 0,
+        lock_period_seconds: 10,
+        max_stake_per_address: 1_000_000_000,
+        rewards_enabled: true,
+    };
+    assert_eq!(
+        client.try_update_config(&cfg),
+        Err(Ok(StakingError::InvalidAmount))
+    );
+}
+
+#[test]
+fn stake_rejects_below_min_and_above_max() {
+    let (_env, _admin, staker, client, _token) = setup();
+    let cfg = StakingConfig {
+        token_address: client.token(),
+        min_stake: 100,
+        lock_period_seconds: 0,
+        max_stake_per_address: 150,
+        rewards_enabled: true,
+    };
+    client.update_config(&cfg);
+    assert_eq!(
+        client.try_stake(&staker, &99),
+        Err(Ok(StakingError::BelowMinStake))
+    );
+    client.stake(&staker, &100);
+    // already at 100; staking 100 more would reach 200 > max_stake 150 → ExceedsMaxStake
+    assert_eq!(
+        client.try_stake(&staker, &100),
+        Err(Ok(StakingError::ExceedsMaxStake))
+    );
+}
+
+#[test]
+fn test_unauthorized_host_stake_methods() {
+    let (env, _admin, staker, client, _token) = setup();
+    let attacker = soroban_sdk::Address::generate(&env);
+
+    assert_eq!(
+        client.try_lock_host_stake(&attacker, &staker, &1u64, &100i128),
+        Err(Ok(StakingError::Unauthorized))
+    );
+
+    assert_eq!(
+        client.try_release_host_stake(&attacker, &staker, &1u64),
+        Err(Ok(StakingError::Unauthorized))
+    );
+}
+
+/// Verify that the configured factory address is authorized to call lock_host_stake.
+#[test]
+fn test_factory_caller_can_lock_host_stake() {
+    let (env, admin, staker, client, _token) = setup();
+    let factory = Address::generate(&env);
+
+    // Stake some tokens so there is balance to lock.
+    client.stake(&staker, &500i128);
+
+    // Register factory address.
+    client.set_factory(&factory);
+
+    // Factory should be able to lock host stake.
+    client.lock_host_stake(&factory, &staker, &1u64, &200i128);
+
+    // Available stake should be reduced by the locked amount.
+    assert_eq!(client.get_host_stake(&staker), 300i128);
+
+    // Factory should also be able to release the lock.
+    client.release_host_stake(&factory, &staker, &1u64);
+    assert_eq!(client.get_host_stake(&staker), 500i128);
+
+    // Sanity: admin can also lock/release.
+    client.lock_host_stake(&admin, &staker, &2u64, &100i128);
+    assert_eq!(client.get_host_stake(&staker), 400i128);
+    client.release_host_stake(&admin, &staker, &2u64);
+    assert_eq!(client.get_host_stake(&staker), 500i128);
+}
+
+/// Verify that an arbitrary caller cannot lock host stake even after a factory is set.
+#[test]
+fn test_non_factory_caller_rejected_after_factory_set() {
+    let (env, _admin, staker, client, _token) = setup();
+    let factory = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.stake(&staker, &500i128);
+    client.set_factory(&factory);
+
+    assert_eq!(
+        client.try_lock_host_stake(&attacker, &staker, &1u64, &100i128),
+        Err(Ok(StakingError::Unauthorized))
+    );
+}
+
+// ── Lock-period boundary tests ────────────────────────────────────────────────
+//
+// The unstake lock check is:  if ledger.timestamp() < unlock_at { StillLocked }
+// where unlock_at = staked_at + lock_period_seconds.
+//
+// Three deterministic boundary points are exercised for each scenario:
+//   unlock_at - 1  →  StillLocked  (one second before unlock)
+//   unlock_at      →  allowed      (exact unlock moment)
+//   unlock_at + 1  →  allowed      (one second after unlock)
+
+fn setup_with_lock(lock_secs: u64) -> (
+    Env,
+    Address,
+    Address,
+    StakingContractClient<'static>,
+    token::StellarAssetClient<'static>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let staker = Address::generate(&env);
+    let asset = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_address = asset.address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+    token_admin_client.mint(&staker, &1_000_000_000i128);
+
+    let contract_id = env.register(StakingContract, (&admin, &token_address));
+
+    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
+    let client = StakingContractClient::new(env_static, &contract_id);
+    let token_admin_static = token::StellarAssetClient::new(env_static, &token_address);
+
+    client.set_lock_period_seconds(&lock_secs);
+
+    (env, admin, staker, client, token_admin_static)
+}
+
+#[test]
+fn unstake_one_second_before_unlock_is_rejected() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 3_600; // 1 hour
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    // Record staked_at by staking at the current ledger timestamp.
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let unlock_at = staked_at + lock_secs;
+
+    // Advance to unlock_at - 1 (one second before unlock).
+    env.ledger().with_mut(|l| {
+        l.timestamp = unlock_at - 1;
+    });
+
+    assert_eq!(
+        client.try_unstake(&staker, &100_000_000i128),
+        Err(Ok(StakingError::StillLocked)),
+        "unstake must be rejected one second before unlock_at"
+    );
+}
+
+#[test]
+fn unstake_exactly_at_unlock_is_allowed() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 3_600;
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let unlock_at = staked_at + lock_secs;
+
+    // Advance to exactly unlock_at.
+    env.ledger().with_mut(|l| {
+        l.timestamp = unlock_at;
+    });
+
+    let result = client.try_unstake(&staker, &100_000_000i128);
+    assert!(
+        result.is_ok(),
+        "unstake must succeed at exactly unlock_at, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn unstake_one_second_after_unlock_is_allowed() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 3_600;
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let unlock_at = staked_at + lock_secs;
+
+    // Advance to unlock_at + 1.
+    env.ledger().with_mut(|l| {
+        l.timestamp = unlock_at + 1;
+    });
+
+    let result = client.try_unstake(&staker, &100_000_000i128);
+    assert!(
+        result.is_ok(),
+        "unstake must succeed one second after unlock_at, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn unstake_with_zero_lock_period_is_always_allowed() {
+    // lock_period_seconds == 0 means unlock_at == staked_at, so any timestamp >= staked_at passes.
+    let (_env, _admin, staker, client, _token_admin) = setup_with_lock(0);
+
+    client.stake(&staker, &100_000_000i128);
+
+    // No ledger advancement — timestamp is still staked_at, which equals unlock_at.
+    let result = client.try_unstake(&staker, &100_000_000i128);
+    assert!(
+        result.is_ok(),
+        "unstake must succeed immediately when lock_period_seconds is 0, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn get_staker_stats_unlock_at_reflects_lock_period() {
+    use soroban_sdk::testutils::Ledger;
+
+    let lock_secs: u64 = 7_200; // 2 hours
+    let (env, _admin, staker, client, _token_admin) = setup_with_lock(lock_secs);
+
+    let staked_at = env.ledger().timestamp();
+    client.stake(&staker, &100_000_000i128);
+
+    let stats = client.get_staker_stats(&staker);
+    assert_eq!(
+        stats.unlock_at,
+        staked_at + lock_secs,
+        "unlock_at in StakerStats must equal staked_at + lock_period_seconds"
+    );
 }
