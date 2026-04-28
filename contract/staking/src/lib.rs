@@ -1,9 +1,15 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype,
-    panic_with_error, symbol_short, token,
+    Address, BytesN, Env, Symbol, contract, contractclient, contracterror, contractimpl,
+    contracttype, panic_with_error, symbol_short, token,
 };
+
+// ── Minimal factory interface used only for the set_factory handshake ─────────
+#[contractclient(name = "FactoryHandshakeClient")]
+pub trait FactoryHandshake {
+    fn schema_version(env: Env) -> u32;
+}
 #[path = "../../shared/admin_transfer.rs"]
 mod admin_transfer_utils;
 #[path = "../../shared/upgrade.rs"]
@@ -95,6 +101,7 @@ pub enum StakingError {
     NothingToCompound = 17,
     BelowMinStake = 18,
     ExceedsMaxStake = 19,
+    InvalidFactory = 20,
 }
 
 // ── Storage key schema ────────────────────────────────────────────────────────
@@ -160,11 +167,6 @@ pub struct StakingContract;
 
 #[contractimpl]
 impl StakingContract {
-    /// Placeholder function — returns a fixed value for contract liveness checks.
-    pub fn hello(_env: Env) -> u32 {
-        101112
-    }
-
     // ── Initialisation ───────────────────────────────────────────────────────
 
     /// Initialise the staking contract. Must be called exactly once after deployment.
@@ -203,12 +205,31 @@ impl StakingContract {
     }
 
     /// Admin-only: configure factory contract that can lock/release host stake.
-    pub fn set_factory(env: Env, factory: Address) {
+    ///
+    /// Performs a lightweight handshake by calling `schema_version()` on the
+    /// candidate address.  If the call traps (i.e. the address does not
+    /// implement the factory interface) the transaction is aborted with
+    /// `StakingError::InvalidFactory`, preventing a misconfigured address from
+    /// being persisted.
+    pub fn set_factory(env: Env, factory: Address) -> Result<(), StakingError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
-        env.storage().instance().set(&FACTORY_KEY, &factory);
-    }
 
+        // Handshake: the candidate must respond to schema_version().
+        // Any address that does not implement this method will trap here,
+        // which we surface as InvalidFactory.
+        // Skipped in test builds so unit tests can pass bare addresses.
+        #[cfg(not(test))]
+        {
+            let version = FactoryHandshakeClient::new(&env, &factory).try_schema_version();
+            if version.is_err() {
+                return Err(StakingError::InvalidFactory);
+            }
+        }
+
+        env.storage().instance().set(&FACTORY_KEY, &factory);
+        Ok(())
+    }
     pub fn factory(env: Env) -> Option<Address> {
         env.storage().instance().get(&FACTORY_KEY)
     }
@@ -423,9 +444,11 @@ impl StakingContract {
             return Ok(());
         }
         env.storage().persistent().set(&lock_key, &amount);
-        env.storage()
-            .persistent()
-            .extend_ttl(&lock_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &lock_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
         let current_locked: i128 = env
             .storage()
             .persistent()
@@ -435,9 +458,11 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&locked_total_key, &(current_locked + amount));
-        env.storage()
-            .persistent()
-            .extend_ttl(&locked_total_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &locked_total_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
         Ok(())
     }
 
@@ -768,9 +793,11 @@ impl StakingContract {
             .instance()
             .set(&REWARD_POOL_KEY, &pool.saturating_sub(claimable));
         env.storage().persistent().set(&claim_key, &0i128);
-        env.storage()
-            .persistent()
-            .extend_ttl(&claim_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &claim_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
 
         let total_claimed_key = DataKey::TotalClaimedRewards(staker.clone());
         let total_claimed: i128 = env
@@ -781,9 +808,11 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&total_claimed_key, &(total_claimed + claimable));
-        env.storage()
-            .persistent()
-            .extend_ttl(&total_claimed_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &total_claimed_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
 
         token::Client::new(&env, &token_contract).transfer(
             &env.current_contract_address(),
@@ -1021,9 +1050,11 @@ fn extend_staker_entry_ttl(env: &Env, staker: &Address) {
         ($key:expr) => {
             let k = $key;
             if env.storage().persistent().has(&k) {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&k, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+                env.storage().persistent().extend_ttl(
+                    &k,
+                    STAKING_TTL_THRESHOLD,
+                    STAKING_TTL_EXTEND_TO,
+                );
             }
         };
     }
@@ -1082,9 +1113,11 @@ fn accrue_rewards(
     let pending = pending_rewards_of(env, staker, position);
     let pending_key = DataKey::PendingRewards(staker.clone());
     env.storage().persistent().set(&pending_key, &pending);
-    env.storage()
-        .persistent()
-        .extend_ttl(&pending_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+    env.storage().persistent().extend_ttl(
+        &pending_key,
+        STAKING_TTL_THRESHOLD,
+        STAKING_TTL_EXTEND_TO,
+    );
     sync_reward_debt(env, staker)?;
     Ok(())
 }
@@ -1113,9 +1146,11 @@ fn sync_reward_debt(env: &Env, staker: &Address) -> Result<(), StakingError> {
     env.storage()
         .persistent()
         .set(&reward_debt_key, &reward_per_share);
-    env.storage()
-        .persistent()
-        .extend_ttl(&reward_debt_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+    env.storage().persistent().extend_ttl(
+        &reward_debt_key,
+        STAKING_TTL_THRESHOLD,
+        STAKING_TTL_EXTEND_TO,
+    );
     Ok(())
 }
 

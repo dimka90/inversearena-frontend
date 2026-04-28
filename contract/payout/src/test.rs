@@ -285,9 +285,15 @@ fn test_set_currency_token_enables_token_transfer() {
     assert_eq!(token.balance(&winner), 750i128);
 }
 
+// ── distribute_prize backward-compat tests (deprecated API) ──────────────────
+// These tests verify that the deprecated `distribute_prize` function continues to
+// behave correctly for integrators who have not yet migrated. New code should use
+// `distribute_split_payout` instead.
+
+#[allow(deprecated)]
 #[test]
-fn test_distribute_prize_transfers_tokens_to_winners() {
-    let (env, _admin, client, token_id, _treasury, _, factory_client) = setup_with_token();
+fn test_distribute_prize_backward_compat_two_winners() {
+    let (env, _admin, client, token_id, _treasury, _, _factory_client) = setup_with_token();
     let winner1 = Address::generate(&env);
     let winner2 = Address::generate(&env);
     let mut winners = Vec::new(&env);
@@ -301,9 +307,10 @@ fn test_distribute_prize_transfers_tokens_to_winners() {
     assert_eq!(token.balance(&winner2), 500i128);
 }
 
+#[allow(deprecated)]
 #[test]
-fn test_distribute_prize_sends_dust_to_treasury() {
-    let (env, _admin, client, token_id, treasury, _, factory_client) = setup_with_token();
+fn test_distribute_prize_backward_compat_dust_to_treasury() {
+    let (env, _admin, client, token_id, treasury, _, _factory_client) = setup_with_token();
     let winner1 = Address::generate(&env);
     let winner2 = Address::generate(&env);
     let winner3 = Address::generate(&env);
@@ -321,9 +328,10 @@ fn test_distribute_prize_sends_dust_to_treasury() {
     assert_eq!(token.balance(&treasury), 1i128);
 }
 
+#[allow(deprecated)]
 #[test]
-fn test_distribute_prize_idempotency_prevents_double_payout() {
-    let (env, _admin, client, token_id, _treasury, _, factory_client) = setup_with_token();
+fn test_distribute_prize_backward_compat_idempotency() {
+    let (env, _admin, client, token_id, _treasury, _, _factory_client) = setup_with_token();
     let winner = Address::generate(&env);
     let mut winners = Vec::new(&env);
     winners.push_back(winner.clone());
@@ -335,24 +343,141 @@ fn test_distribute_prize_idempotency_prevents_double_payout() {
     assert_eq!(second, Err(Ok(PayoutError::AlreadyPaid)));
 }
 
+#[allow(deprecated)]
 #[test]
-fn test_distribute_prize_no_winners_returns_error() {
-    let (env, _admin, client, token_id, _treasury, _, factory_client) = setup_with_token();
+fn test_distribute_prize_backward_compat_no_winners_error() {
+    let (env, _admin, client, token_id, _treasury, _, _factory_client) = setup_with_token();
     let empty: Vec<Address> = Vec::new(&env);
 
     let result = client.try_distribute_prize(&4u32, &1000i128, &empty, &token_id);
     assert_eq!(result, Err(Ok(PayoutError::NoWinners)));
 }
 
+#[allow(deprecated)]
 #[test]
-fn test_distribute_prize_invalid_amount_returns_error() {
-    let (env, _admin, client, token_id, _treasury, _, factory_client) = setup_with_token();
+fn test_distribute_prize_backward_compat_invalid_amount_error() {
+    let (env, _admin, client, token_id, _treasury, _, _factory_client) = setup_with_token();
     let winner = Address::generate(&env);
     let mut winners = Vec::new(&env);
     winners.push_back(winner);
 
     let result = client.try_distribute_prize(&5u32, &0i128, &winners, &token_id);
     assert_eq!(result, Err(Ok(PayoutError::InvalidAmount)));
+}
+
+// ── distribute_split_payout canonical multi-winner tests ─────────────────────
+// These are the canonical tests for multi-winner distribution. All new integrations
+// should use `distribute_split_payout` rather than the deprecated `distribute_prize`.
+
+#[test]
+fn canonical_split_two_winners_equal_split() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let winner1 = Address::generate(&env);
+    let winner2 = Address::generate(&env);
+    let mut winners = Vec::new(&env);
+    winners.push_back(winner1.clone());
+    winners.push_back(winner2.clone());
+
+    client.distribute_split_payout(&10u32, &winners, &1000i128, &token_id);
+
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&winner1), 500i128);
+    assert_eq!(token.balance(&winner2), 500i128);
+    assert!(client.is_split_payout_distributed(&10u32));
+}
+
+#[test]
+fn canonical_split_three_winners_dust_to_first() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let winner1 = Address::generate(&env);
+    let winner2 = Address::generate(&env);
+    let winner3 = Address::generate(&env);
+    let mut winners = Vec::new(&env);
+    winners.push_back(winner1.clone());
+    winners.push_back(winner2.clone());
+    winners.push_back(winner3.clone());
+
+    client.distribute_split_payout(&11u32, &winners, &1000i128, &token_id);
+
+    let token = TokenClient::new(&env, &token_id);
+    // 1000 / 3 = 333 rem 1; first winner absorbs the 1-unit dust
+    assert_eq!(token.balance(&winner1), 334i128);
+    assert_eq!(token.balance(&winner2), 333i128);
+    assert_eq!(token.balance(&winner3), 333i128);
+}
+
+#[test]
+fn canonical_split_idempotency_prevents_double_payout() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let winner = Address::generate(&env);
+    let mut winners = Vec::new(&env);
+    winners.push_back(winner.clone());
+
+    client.distribute_split_payout(&12u32, &winners, &500i128, &token_id);
+    assert!(client.is_split_payout_distributed(&12u32));
+
+    let second = client.try_distribute_split_payout(&12u32, &winners, &500i128, &token_id);
+    assert_eq!(second, Err(Ok(PayoutError::AlreadyPaid)));
+}
+
+#[test]
+fn canonical_split_no_winners_returns_error() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let empty: Vec<Address> = Vec::new(&env);
+
+    let result = client.try_distribute_split_payout(&13u32, &empty, &1000i128, &token_id);
+    assert_eq!(result, Err(Ok(PayoutError::NoWinners)));
+}
+
+#[test]
+fn canonical_split_invalid_amount_returns_error() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let winner = Address::generate(&env);
+    let mut winners = Vec::new(&env);
+    winners.push_back(winner);
+
+    let result = client.try_distribute_split_payout(&14u32, &winners, &0i128, &token_id);
+    assert_eq!(result, Err(Ok(PayoutError::InvalidAmount)));
+}
+
+#[test]
+fn canonical_split_stores_per_winner_receipts() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let winner1 = Address::generate(&env);
+    let winner2 = Address::generate(&env);
+    let mut winners = Vec::new(&env);
+    winners.push_back(winner1.clone());
+    winners.push_back(winner2.clone());
+
+    client.distribute_split_payout(&15u32, &winners, &1000i128, &token_id);
+
+    let r1 = client
+        .get_split_payout_receipt(&15u32, &winner1)
+        .expect("receipt for winner1 must exist");
+    let r2 = client
+        .get_split_payout_receipt(&15u32, &winner2)
+        .expect("receipt for winner2 must exist");
+    assert_eq!(r1.amount, 500i128);
+    assert_eq!(r2.amount, 500i128);
+    assert_eq!(r1.arena_id, 15u32);
+    assert_eq!(r2.arena_id, 15u32);
+}
+
+#[test]
+fn canonical_split_single_winner_gets_full_amount() {
+    let (env, _admin, client, token_id, _treasury, _, _) = setup_with_token();
+    let winner = Address::generate(&env);
+    let mut winners = Vec::new(&env);
+    winners.push_back(winner.clone());
+
+    client.distribute_split_payout(&16u32, &winners, &777i128, &token_id);
+
+    let token = TokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&winner), 777i128);
+    let receipt = client
+        .get_split_payout_receipt(&16u32, &winner)
+        .expect("receipt must exist");
+    assert_eq!(receipt.amount, 777i128);
 }
 
 #[test]
@@ -504,12 +629,22 @@ fn pause_blocks_distribute_winnings() {
     assert_eq!(result, Err(Ok(PayoutError::Paused)));
 }
 
+#[allow(deprecated)]
 #[test]
 fn pause_blocks_distribute_prize() {
-    let (env, _admin, client, token_id, _treasury, _, factory_client) = setup_with_token();
+    let (env, _admin, client, token_id, _treasury, _, _factory_client) = setup_with_token();
     client.pause();
     let winners = Vec::from_array(&env, [Address::generate(&env)]);
     let result = client.try_distribute_prize(&1u32, &100i128, &winners, &token_id);
+    assert_eq!(result, Err(Ok(PayoutError::Paused)));
+}
+
+#[test]
+fn pause_blocks_distribute_split_payout() {
+    let (env, _admin, client, token_id, _treasury, _, _factory_client) = setup_with_token();
+    client.pause();
+    let winners = Vec::from_array(&env, [Address::generate(&env)]);
+    let result = client.try_distribute_split_payout(&1u32, &winners, &100i128, &token_id);
     assert_eq!(result, Err(Ok(PayoutError::Paused)));
 }
 
@@ -847,6 +982,62 @@ fn win_fee_bps_cases_0_200_1000() {
     run_case(12, 1_000, 1_000);
 }
 
+fn assert_payout_conservation(
+    client: &PayoutContractClient<'_>,
+    arena_id: u64,
+    total_prize_pool: i128,
+    operation: &str,
+) {
+    let receipt = client
+        .get_payout_by_arena(&arena_id)
+        .expect("payout receipt must exist for invariant check");
+    assert_eq!(
+        receipt.amount + receipt.fee,
+        total_prize_pool,
+        "payout invariant failed after {operation}: payout_amount({}) + platform_fee({}) != total_prize_pool({total_prize_pool})",
+        receipt.amount,
+        receipt.fee
+    );
+}
+
+#[test]
+fn issue_478_payout_amount_plus_fee_equals_total_prize_pool() {
+    let (env, _admin, client, token_id, _treasury, _factory_id, factory_client) = setup_with_token();
+    let currency = symbol_short!("USDC");
+    client.set_currency_token(&currency, &token_id);
+    let token = TokenClient::new(&env, &token_id);
+
+    let pool_id = 478u32;
+    let round_id = 1u32;
+    let amount = 12_345i128;
+    let fee_bps = 275u32;
+    let winner = Address::generate(&env);
+    let caller = Address::generate(&env);
+    factory_client.set_arena(&(pool_id as u64), &caller);
+    factory_client.set_fee_bps(&fee_bps);
+
+    let before_winner = token.balance(&winner);
+    let before_factory = token.balance(&factory_client.address);
+    client.distribute_winnings(
+        &caller,
+        &symbol_short!("INV478"),
+        &pool_id,
+        &round_id,
+        &winner,
+        &amount,
+        &currency,
+    );
+
+    let expected_fee = amount * (fee_bps as i128) / 10_000;
+    let expected_winner_amount = amount - expected_fee;
+    assert_eq!(token.balance(&winner), before_winner + expected_winner_amount);
+    assert_eq!(
+        token.balance(&factory_client.address),
+        before_factory + expected_fee
+    );
+    assert_payout_conservation(&client, pool_id as u64, amount, "distribute_winnings");
+}
+
 #[test]
 fn win_fee_overflow_guard_returns_error() {
     let (env, _admin, client, _token_id, _treasury, _factory_id, factory_client) =
@@ -1067,15 +1258,22 @@ fn distribute_winnings_emits_payout_event_with_correct_schema() {
     let before = env.events().all().len();
     client.distribute_winnings(&caller, &ctx, &42u32, &1u32, &winner, &amount, &currency);
     let events = env.events().all();
-    assert!(events.len() > before, "distribute_winnings must emit at least one event");
+    assert!(
+        events.len() > before,
+        "distribute_winnings must emit at least one event"
+    );
 
     let (_contract, topics, data) = events.last().unwrap();
     let topic: Symbol = topics.get(0).unwrap().into_val(&env);
     assert_eq!(topic, symbol_short!("PAYOUT"), "topic must be PAYOUT");
 
     // Schema: (winner: Address, winner_amount: i128, fee_amount: i128, currency: Symbol)
-    let (emitted_winner, emitted_amount, emitted_fee, emitted_currency): (Address, i128, i128, Symbol) =
-        data.into_val(&env);
+    let (emitted_winner, emitted_amount, emitted_fee, emitted_currency): (
+        Address,
+        i128,
+        i128,
+        Symbol,
+    ) = data.into_val(&env);
     assert_eq!(emitted_winner, winner);
     assert_eq!(emitted_amount, amount);
     assert_eq!(emitted_fee, 0i128);
@@ -1094,7 +1292,10 @@ fn set_currency_token_emits_tok_set_event_with_correct_schema() {
     let before = env.events().all().len();
     client.set_currency_token(&currency, &token_addr);
     let events = env.events().all();
-    assert!(events.len() > before, "set_currency_token must emit at least one event");
+    assert!(
+        events.len() > before,
+        "set_currency_token must emit at least one event"
+    );
 
     let (_contract, topics, data) = events.last().unwrap();
     let topic: Symbol = topics.get(0).unwrap().into_val(&env);
@@ -1107,6 +1308,7 @@ fn set_currency_token_emits_tok_set_event_with_correct_schema() {
     assert_eq!(emitted_token, token_addr);
 }
 
+#[allow(deprecated)]
 #[test]
 fn distribute_prize_emits_payout_and_dust_events() {
     use soroban_sdk::testutils::Events as _;
@@ -1129,7 +1331,10 @@ fn distribute_prize_emits_payout_and_dust_events() {
 
     // 2 winners + 1 dust = 3 new events
     let new_count = events.len() - before;
-    assert!(new_count >= 3, "expected at least 3 new events (2 winner + 1 dust)");
+    assert!(
+        new_count >= 3,
+        "expected at least 3 new events (2 winner + 1 dust)"
+    );
 
     // First winner event: topic = PAYOUT; schema: (winner: Address, share: i128, currency: Address)
     let (_, topics, data) = events.get(before).unwrap();
@@ -1141,7 +1346,11 @@ fn distribute_prize_emits_payout_and_dust_events() {
     // Last new event is the dust event: topic = DUST; schema: (treasury: Address, dust: i128, currency: Address)
     let (_, dust_topics, dust_data) = events.get(before + new_count - 1).unwrap();
     let dust_topic: Symbol = dust_topics.get(0).unwrap().into_val(&env);
-    assert_eq!(dust_topic, symbol_short!("DUST"), "remainder must emit DUST event");
+    assert_eq!(
+        dust_topic,
+        symbol_short!("DUST"),
+        "remainder must emit DUST event"
+    );
     let (recv, dust_amount, _tok): (Address, i128, Address) = dust_data.into_val(&env);
     assert_eq!(recv, treasury);
     assert_eq!(dust_amount, 1i128);
@@ -1162,13 +1371,18 @@ fn distribute_winnings_with_fee_emits_correct_amounts() {
     let currency = symbol_short!("XLM");
 
     client.distribute_winnings(
-        &caller, &symbol_short!("CTX"), &99u32, &1u32, &winner, &amount, &currency,
+        &caller,
+        &symbol_short!("CTX"),
+        &99u32,
+        &1u32,
+        &winner,
+        &amount,
+        &currency,
     );
 
     let events = env.events().all();
     let (_contract, _topics, data) = events.last().unwrap();
-    let (_, winner_amount, fee_amount, _): (Address, i128, i128, Symbol) =
-        data.into_val(&env);
+    let (_, winner_amount, fee_amount, _): (Address, i128, i128, Symbol) = data.into_val(&env);
 
     assert_eq!(fee_amount, 50i128, "5% of 1000 = 50");
     assert_eq!(winner_amount, 950i128, "winner receives 950 after 5% fee");

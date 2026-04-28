@@ -188,6 +188,13 @@ const REGISTRY_TTL_EXTEND_TO: u32 = 535_680;
 
 const DEFAULT_MIN_STAKE: i128 = 10_000_000;
 
+// ── Join deadline bounds ────────────────────────────────────────────────────────
+
+/// Minimum buffer before `join_deadline` (1 hour in seconds).
+const MIN_JOIN_DEADLINE_BUFFER: u64 = 3600;
+/// Maximum horizon for `join_deadline` from now (7 days in seconds).
+const MAX_JOIN_DEADLINE_HORIZON: u64 = 604_800;
+
 // ── Round speed bounds (mirrored from arena for fail-fast validation) ────────
 
 /// Minimum `round_speed_in_ledgers` — 10 ledgers ≈ 50 s at mainnet ~5 s/ledger.
@@ -316,6 +323,10 @@ pub enum Error {
     InvalidRoundSpeed = 34,
     /// Player has reached the max concurrent arena participation limit.
     ParticipationLimitReached = 35,
+    /// `join_deadline` is in the past.
+    JoinDeadlineExpired = 36,
+    /// `join_deadline` exceeds the maximum allowed horizon.
+    JoinDeadlineTooFar = 37,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -604,7 +615,9 @@ impl FactoryContract {
     pub fn set_max_concurrent_arenas(env: Env, new_limit: u32) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
-        env.storage().instance().set(&PARTICIPATION_LIMIT_KEY, &new_limit);
+        env.storage()
+            .instance()
+            .set(&PARTICIPATION_LIMIT_KEY, &new_limit);
         Ok(())
     }
 
@@ -621,8 +634,7 @@ impl FactoryContract {
     /// Called by arena contract before accepting join.
     pub fn increment_participation(env: Env, player: Address) -> Result<(), Error> {
         let limit = Self::get_max_concurrent_arenas(env.clone());
-        let current = Self::get_player_stats(env.clone(), player.clone())
-            .arenas_entered;
+        let current = Self::get_player_stats(env.clone(), player.clone()).arenas_entered;
         if current >= limit {
             return Err(Error::ParticipationLimitReached);
         }
@@ -646,11 +658,9 @@ impl FactoryContract {
             stats.win_rate_bps = (stats.arenas_won * 10_000) / stats.arenas_entered;
         }
         env.storage().persistent().set(&key, &stats);
-        env.storage().persistent().extend_ttl(
-            &key,
-            REGISTRY_TTL_THRESHOLD,
-            REGISTRY_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
     }
 
     /// Record arena win for a player.
@@ -671,11 +681,9 @@ impl FactoryContract {
             stats.win_rate_bps = (stats.arenas_won * 10_000) / stats.arenas_entered;
         }
         env.storage().persistent().set(&key, &stats);
-        env.storage().persistent().extend_ttl(
-            &key,
-            REGISTRY_TTL_THRESHOLD,
-            REGISTRY_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, REGISTRY_TTL_THRESHOLD, REGISTRY_TTL_EXTEND_TO);
     }
 
     /// Decrement participation count when player is eliminated or arena completes.
@@ -1013,6 +1021,14 @@ impl FactoryContract {
 
         if round_speed < MIN_ROUND_SPEED_LEDGERS || round_speed > MAX_ROUND_SPEED_LEDGERS {
             return Err(Error::InvalidRoundSpeed);
+        }
+
+        let now = env.ledger().timestamp();
+        if join_deadline <= now + MIN_JOIN_DEADLINE_BUFFER {
+            return Err(Error::JoinDeadlineExpired);
+        }
+        if join_deadline > now + MAX_JOIN_DEADLINE_HORIZON {
+            return Err(Error::JoinDeadlineTooFar);
         }
 
         // Issue #449: host must have enough stake locked in staking contract.
@@ -1437,20 +1453,19 @@ impl FactoryContract {
 
             // Record win for winner.
             if let Some(winner_addr) = winner {
-let _pool_count: u32 = env
+                let _pool_count: u32 = env
                     .storage()
                     .instance()
                     .get(&POOL_COUNT_KEY)
                     .unwrap_or(0u32);
                 let arena_key = DataKey::Pool(arena_id as u32);
-                if let Some(meta) = env.storage().persistent().get::<_, ArenaMetadata>(&arena_key) {
+                if let Some(meta) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, ArenaMetadata>(&arena_key)
+                {
                     let total_prize = meta.stake_amount * (meta.capacity as i128);
-                    Self::record_arena_win(
-                        env.clone(),
-                        winner_addr.clone(),
-                        total_prize,
-                        1u32,
-                    );
+                    Self::record_arena_win(env.clone(), winner_addr.clone(), total_prize, 1u32);
                 }
             }
 
